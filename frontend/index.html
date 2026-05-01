@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Approval AI — Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/main.css">
+</head>
+<body>
+
+<!-- LOGIN SCREEN -->
+<div id="loginScreen" class="login-screen">
+  <div class="login-bg-grid"></div>
+  <div class="login-card">
+    <div class="login-logo">
+      <div class="logo-mark">
+        <span class="logo-icon">⬡</span>
+      </div>
+      <h1>Approval AI</h1>
+      <p>Intelligent email approval management</p>
+    </div>
+    <button class="btn-microsoft" onclick="App.login()">
+      <svg width="20" height="20" viewBox="0 0 21 21" fill="none">
+        <rect x="1" y="1" width="9" height="9" fill="#F25022"/>
+        <rect x="11" y="1" width="9" height="9" fill="#7FBA00"/>
+        <rect x="1" y="11" width="9" height="9" fill="#00A4EF"/>
+        <rect x="11" y="11" width="9" height="9" fill="#FFB900"/>
+      </svg>
+      Sign in with Microsoft
+    </button>
+    <div class="login-features">
+      <span>🔒 Secure OAuth</span>
+      <span>🧠 AI Summaries</span>
+      <span>⚡ Instant Actions</span>
+    </div>
+    <div id="loginError" class="login-error hidden"></div>
+  </div>
+</div>
+
+<!-- MAIN APP -->
+<div id="app" class="app hidden">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <span class="logo-icon-sm">⬡</span>
+      <span class="brand-name">Approval AI</span>
+    </div>
+
+    <div class="sidebar-user" id="userCard">
+      <div class="user-avatar" id="userAvatar">U</div>
+      <div class="user-info">
+        <div class="user-name" id="userName">Loading...</div>
+        <div class="user-email" id="userEmail">—</div>
+      </div>
+    </div>
+
+    <nav class="sidebar-nav">
+      <a class="nav-item active" data-section="approval" onclick="App.showSection('approval')">
+        <span class="nav-icon">📋</span>
+        <span>Approval Emails</span>
+        <span class="nav-badge" id="approvalCount">0</span>
+      </a>
+      <a class="nav-item" data-section="other" onclick="App.showSection('other')">
+        <span class="nav-icon">📬</span>
+        <span>Other Emails</span>
+        <span class="nav-badge" id="otherCount">0</span>
+      </a>
+    </nav>
+
+    <div class="sidebar-stats">
+      <div class="stat-card">
+        <div class="stat-val" id="statPending">—</div>
+        <div class="stat-label">Pending</div>
+      </div>
+      <div class="stat-card stat-approved">
+        <div class="stat-val" id="statApproved">—</div>
+        <div class="stat-label">Approved</div>
+      </div>
+      <div class="stat-card stat-rejected">
+        <div class="stat-val" id="statRejected">—</div>
+        <div class="stat-label">Rejected</div>
+      </div>
+    </div>
+
+    <button class="btn-logout" onclick="App.logout()">
+      <span>↩</span> Sign Out
+    </button>
+  </aside>
+
+  <!-- MAIN CONTENT -->
+  <main class="main-content">
+
+    <!-- TOP BAR -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <h2 class="page-title" id="pageTitle">Approval Emails</h2>
+        <div class="breadcrumb" id="breadcrumb"></div>
+      </div>
+      <div class="topbar-right">
+        <button class="btn-icon" onclick="App.refresh()" title="Refresh">↻</button>
+        <div class="notification-dot hidden" id="urgentBadge" title="Urgent items">🔴</div>
+      </div>
+    </header>
+
+    <!-- TIME FILTER BAR -->
+    <div class="filter-bar" id="filterBar">
+      <div class="filter-presets">
+        <button class="filter-btn active" data-preset="24h" onclick="App.setPreset(this, '24h')">24h</button>
+        <button class="filter-btn" data-preset="2d" onclick="App.setPreset(this, '2d')">2d</button>
+        <button class="filter-btn" data-preset="1w" onclick="App.setPreset(this, '1w')">1 Week</button>
+        <button class="filter-btn" data-preset="1m" onclick="App.setPreset(this, '1m')">1 Month</button>
+        <button class="filter-btn" data-preset="custom" onclick="App.toggleCustomRange(this)">Custom ▾</button>
+      </div>
+
+      <div class="filter-custom hidden" id="customRangePanel">
+        <div class="custom-row">
+          <label>From</label>
+          <input type="datetime-local" id="startDt" />
+          <label>To</label>
+          <input type="datetime-local" id="endDt" />
+          <button class="btn-apply" onclick="App.applyCustomRange()">Apply</button>
+        </div>
+        <div class="custom-row">
+          <label>Or duration:</label>
+          <input type="number" id="durationValue" min="1" max="365" placeholder="e.g. 3" style="width:80px" />
+          <select id="durationUnit">
+            <option value="hours">Hours</option>
+            <option value="days" selected>Days</option>
+            <option value="weeks">Weeks</option>
+            <option value="months">Months</option>
+          </select>
+          <button class="btn-apply" onclick="App.applyDuration()">Apply</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- APPROVAL SECTION -->
+    <section id="sectionApproval" class="content-section">
+      <div id="emailListContainer">
+        <div id="loadingState" class="loading-state hidden">
+          <div class="spinner"></div>
+          <p>Fetching emails from Outlook…</p>
+        </div>
+        <div id="emptyState" class="empty-state hidden">
+          <div class="empty-icon">📭</div>
+          <h3>No approval emails found</h3>
+          <p>No pending approvals in the selected time range.</p>
+        </div>
+        <div id="emailGroups"></div>
+      </div>
+    </section>
+
+    <!-- OTHER EMAILS SECTION -->
+    <section id="sectionOther" class="content-section hidden">
+      <div class="digest-header">
+        <h3>Daily Email Digest</h3>
+        <p>Non-approval emails summarized for quick scanning</p>
+      </div>
+      <div id="otherEmailList"></div>
+    </section>
+
+    <!-- EMAIL DETAIL PANEL -->
+    <div id="detailPanel" class="detail-panel hidden">
+      <div class="detail-overlay" onclick="App.closeDetail()"></div>
+      <div class="detail-content">
+        <button class="detail-close" onclick="App.closeDetail()">✕</button>
+
+        <div class="detail-header">
+          <div class="detail-meta">
+            <span class="detail-priority-badge" id="detailPriority"></span>
+            <span class="detail-status-badge" id="detailStatus"></span>
+          </div>
+          <h2 class="detail-subject" id="detailSubject">—</h2>
+          <div class="detail-from-row">
+            <span class="detail-from" id="detailFrom">—</span>
+            <span class="detail-date" id="detailDate">—</span>
+          </div>
+        </div>
+
+        <!-- AI Summary -->
+        <div class="ai-card" id="aiSummaryCard">
+          <div class="ai-card-header">
+            <span class="ai-badge">🧠 AI Analysis</span>
+            <button class="btn-regenerate" onclick="App.regenerateSummary()" title="Regenerate">↻</button>
+          </div>
+          <div id="aiLoading" class="ai-loading">
+            <div class="spinner-sm"></div>
+            <span>Analyzing with AI…</span>
+          </div>
+          <div id="aiContent" class="ai-content hidden">
+            <div class="ai-section">
+              <div class="ai-label">📌 Email Summary</div>
+              <div class="ai-text" id="aiEmailSummary">—</div>
+            </div>
+            <div class="ai-section" id="aiDocSection">
+              <div class="ai-label">📎 Document Summary</div>
+              <div class="ai-text" id="aiDocSummary">—</div>
+            </div>
+           
+            <div class="ai-section" id="aiDecisionSection">
+              <div class="ai-label">🎯 Key Decision Points</div>
+              <ul class="ai-list" id="aiDecisionPoints"></ul>
+            </div>
+            <div class="ai-action-row">
+              <div class="ai-suggestion" id="aiSuggestedAction">
+                <span class="ai-suggestion-label">Suggested:</span>
+                <span class="ai-suggestion-val" id="aiSuggestionVal">—</span>
+                <span class="ai-suggestion-reason" id="aiSuggestionReason">—</span>
+              </div>
+              <div class="ai-smart-reply" id="aiSmartReply">
+                <span class="ai-suggestion-label">💬 Smart Reply:</span>
+                <span id="aiSmartReplyText">—</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Attachments -->
+        <div class="attachments-section" id="attachmentsSection">
+          <div class="section-title">📎 Attachments</div>
+          <div id="attachmentsList"></div>
+        </div>
+
+        <!-- Email Body -->
+        <div class="email-body-section">
+          <div class="section-title">✉️ Original Email</div>
+          <div class="email-body-frame" id="emailBodyFrame"></div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="action-bar" id="actionBar">
+          <div class="action-comment-row">
+            <input type="text" id="actionComment" placeholder="Add comment (optional)…" class="action-comment-input" />
+          </div>
+          <div class="action-buttons">
+            <button class="btn-approve" onclick="App.performAction('approve')">
+              <span>✓</span> Approve
+            </button>
+            <button class="btn-reject" onclick="App.performAction('reject')">
+              <span>✗</span> Reject
+            </button>
+            <button class="btn-info" onclick="App.performAction('request_info')">
+              <span>?</span> Request Info
+            </button>
+          </div>
+        </div>
+
+        <div id="actionFeedback" class="action-feedback hidden"></div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- TOAST NOTIFICATIONS -->
+<div id="toastContainer" class="toast-container"></div>
+
+<script src="/js/api.js"></script>
+<script src="/js/app.js"></script>
+</body>
+</html>
