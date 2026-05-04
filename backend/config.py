@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     MICROSOFT_CLIENT_ID: str = ""
     MICROSOFT_CLIENT_SECRET: str = ""
     MICROSOFT_TENANT_ID: str = "common"  # or your specific tenant
-    MICROSOFT_REDIRECT_URI: str = "http://localhost:8000/api/auth/callback"
+    MICROSOFT_REDIRECT_URI: str = "https://approval-email-assistant-c3h4huaggde6auav.centralindia-01.azurewebsites.net/api/auth/callback"
     MICROSOFT_SCOPES: str = "openid profile email Mail.Read Mail.Send offline_access"
 
     # OpenAI
