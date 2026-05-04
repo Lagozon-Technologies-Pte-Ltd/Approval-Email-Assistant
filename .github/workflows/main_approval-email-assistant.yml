@@ -63,4 +63,4 @@ jobs:
         with:
           app-name: 'approval-email-assistant'
           slot-name: 'Production'
-          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_FBAFE858887748E182EC754C933B25E6 }}
+          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_AC4EA444FCAD4C6A8C8796E926E6E83A }}
