@@ -6,9 +6,9 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from config import settings
-from routers.auth import get_valid_access_token
-from services.tracking import tracking_store
+from backend.config import settings
+from backend.routers.auth import get_valid_access_token
+from backend.services.tracking import tracking_store
 
 router = APIRouter()
 

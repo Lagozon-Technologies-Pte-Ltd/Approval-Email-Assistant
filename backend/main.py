@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os
 
-from routers import auth, emails, actions, summary
+from backend.routers import auth, emails, actions, summary
 
 # =========================
 # APP INIT

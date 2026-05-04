@@ -10,7 +10,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from config import settings, OAUTH_SCOPES
+from backend.config import settings, OAUTH_SCOPES
 
 router = APIRouter()
 

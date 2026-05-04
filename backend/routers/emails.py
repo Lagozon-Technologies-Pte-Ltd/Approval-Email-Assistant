@@ -8,10 +8,10 @@ from typing import Optional
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from config import settings
-from routers.auth import get_valid_access_token
-from services.priority import compute_priority
-from services.tracking import tracking_store
+from backend.config import settings
+from backend.routers.auth import get_valid_access_token
+from backend.services.priority import compute_priority
+from backend.services.tracking import tracking_store
 
 router = APIRouter()
 
