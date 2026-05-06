@@ -1,9 +1,15 @@
 /**
- * Approval AI Dashboard — Main Application
- * Vanilla JS, no frameworks
+ * Approval AI Dashboard — Main Application v2
+ * New features:
+ *  - Persistent status (SQLite backend)
+ *  - Thread / trail mail panel
+ *  - Per-attachment AI summarize button
+ *  - Time-accurate dashboard stats
+ *  - AI-enhanced HTML comments before sending
  */
 
 const App = (() => {
+
   // ── State ─────────────────────────────────────────────────
   let state = {
     currentSection: 'approval',
@@ -13,6 +19,7 @@ const App = (() => {
     emails: [],
     grouped: {},
     urgentCount: 0,
+    threadVisible: false,
   };
 
   // ── Init ──────────────────────────────────────────────────
@@ -20,26 +27,17 @@ const App = (() => {
     checkAuthFromUrl();
     try {
       const status = await ApiClient.getAuthStatus();
-      if (status.authenticated) {
-        showApp();
-      } else {
-        showLogin();
-      }
-    } catch {
-      showLogin();
-    }
+      if (status.authenticated) showApp(); else showLogin();
+    } catch { showLogin(); }
   }
 
   function checkAuthFromUrl() {
     const params = new URLSearchParams(window.location.search);
     if (params.get('error')) {
-      document.getElementById('loginError').textContent =
-        'Authentication failed: ' + params.get('error');
+      document.getElementById('loginError').textContent = 'Authentication failed: ' + params.get('error');
       document.getElementById('loginError').classList.remove('hidden');
     }
-    if (params.has('authenticated')) {
-      history.replaceState({}, '', '/');
-    }
+    if (params.has('authenticated')) history.replaceState({}, '', '/');
   }
 
   async function showApp() {
@@ -60,15 +58,11 @@ const App = (() => {
     try {
       const { auth_url } = await ApiClient.getLoginUrl();
       window.location.href = auth_url;
-    } catch (e) {
-      showToast('Failed to initiate login: ' + e.message, 'error');
-    }
+    } catch (e) { showToast('Failed to initiate login: ' + e.message, 'error'); }
   }
 
   async function logout() {
-    try {
-      await ApiClient.logout();
-    } catch {}
+    try { await ApiClient.logout(); } catch {}
     showLogin();
   }
 
@@ -84,32 +78,26 @@ const App = (() => {
 
   async function loadStats() {
     try {
-      const stats = await ApiClient.getStats();
-      document.getElementById('statPending').textContent = stats.pending ?? '—';
-      document.getElementById('statApproved').textContent = stats.approved ?? '—';
-      document.getElementById('statRejected').textContent = stats.rejected ?? '—';
+      const preset = state.currentFilter.preset || null;
+      const stats = await ApiClient.getStats(preset);
+      document.getElementById('statPending').textContent   = stats.pending   ?? '—';
+      document.getElementById('statApproved').textContent  = stats.approved  ?? '—';
+      document.getElementById('statRejected').textContent  = stats.rejected  ?? '—';
+      const needsEl = document.getElementById('statNeedsInfo');
+      if (needsEl) needsEl.textContent = stats.needs_info ?? '—';
     } catch {}
   }
 
   // ── Navigation ────────────────────────────────────────────
   function showSection(section) {
     state.currentSection = section;
-
-    // Update nav
-    document.querySelectorAll('.nav-item').forEach(el => {
-      el.classList.toggle('active', el.dataset.section === section);
-    });
-
-    // Toggle sections
+    document.querySelectorAll('.nav-item').forEach(el =>
+      el.classList.toggle('active', el.dataset.section === section));
     document.getElementById('sectionApproval').classList.toggle('hidden', section !== 'approval');
     document.getElementById('sectionOther').classList.toggle('hidden', section !== 'other');
     document.getElementById('filterBar').classList.toggle('hidden', section !== 'approval');
-
-    // Update title
-    document.getElementById('pageTitle').textContent =
-      section === 'approval' ? 'Approval Emails' : 'Other Emails';
+    document.getElementById('pageTitle').textContent = section === 'approval' ? 'Approval Emails' : 'Other Emails';
     document.getElementById('breadcrumb').textContent = '';
-
     if (section === 'other') loadOtherEmails();
     if (section === 'approval') loadApprovalEmails();
   }
@@ -119,9 +107,7 @@ const App = (() => {
     document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById('customRangePanel').classList.add('hidden');
-
     if (preset === 'custom') return;
-
     state.currentFilter = { preset };
     loadApprovalEmails();
   }
@@ -134,14 +120,14 @@ const App = (() => {
 
   function applyCustomRange() {
     const start = document.getElementById('startDt').value;
-    const end = document.getElementById('endDt').value;
+    const end   = document.getElementById('endDt').value;
     if (!start || !end) { showToast('Please select start and end date/time.', 'error'); return; }
     state.currentFilter = { start_dt: new Date(start).toISOString(), end_dt: new Date(end).toISOString() };
     loadApprovalEmails();
   }
 
   function applyDuration() {
-    const val = parseInt(document.getElementById('durationValue').value, 10);
+    const val  = parseInt(document.getElementById('durationValue').value, 10);
     const unit = document.getElementById('durationUnit').value;
     if (!val || val < 1) { showToast('Please enter a valid duration.', 'error'); return; }
     state.currentFilter = { duration_value: val, duration_unit: unit };
@@ -153,12 +139,11 @@ const App = (() => {
     setLoadingState(true);
     try {
       const data = await ApiClient.getApprovalEmails(state.currentFilter);
-      state.emails = data.emails;
+      state.emails  = data.emails;
       state.grouped = data.grouped;
       renderEmailGroups(data.grouped);
       document.getElementById('approvalCount').textContent = data.total;
 
-      // Check for urgent
       state.urgentCount = data.emails.filter(e => e.priority === 'high' && e.status === 'pending').length;
       const urgentBadge = document.getElementById('urgentBadge');
       if (state.urgentCount > 0) {
@@ -177,16 +162,13 @@ const App = (() => {
   async function loadOtherEmails() {
     const container = document.getElementById('otherEmailList');
     container.innerHTML = '<div class="loading-state"><div class="spinner"></div><p>Fetching emails…</p></div>';
-
     try {
       const data = await ApiClient.getOtherEmails({ preset: '1w' });
       document.getElementById('otherCount').textContent = data.total;
-
       if (data.emails.length === 0) {
         container.innerHTML = '<div class="empty-state"><div class="empty-icon">📭</div><h3>No other emails</h3><p>Nothing to show in this period.</p></div>';
         return;
       }
-
       container.innerHTML = data.emails.map(email => `
         <div class="digest-card">
           <div class="digest-card-top">
@@ -221,9 +203,9 @@ const App = (() => {
     }
 
     const groups = [
-      { key: 'today', label: 'Today', items: grouped.today || [] },
-      { key: 'this_week', label: 'This Week', items: grouped.this_week || [] },
-      { key: 'older', label: 'Older', items: grouped.older || [] },
+      { key: 'today',     label: 'Today',     items: grouped.today     || [] },
+      { key: 'this_week', label: 'This Week',  items: grouped.this_week || [] },
+      { key: 'older',     label: 'Older',      items: grouped.older     || [] },
     ];
 
     for (const group of groups) {
@@ -232,11 +214,7 @@ const App = (() => {
       header.className = 'group-header';
       header.textContent = group.label;
       container.appendChild(header);
-
-      group.items.forEach((email, i) => {
-        const card = createEmailCard(email, i);
-        container.appendChild(card);
-      });
+      group.items.forEach((email, i) => container.appendChild(createEmailCard(email, i)));
     }
   }
 
@@ -272,15 +250,15 @@ const App = (() => {
 
   // ── Email Detail ──────────────────────────────────────────
   async function openEmailDetail(emailSummary) {
-    state.currentEmailId = emailSummary.id;
-    state.currentEmail = emailSummary;
+    state.currentEmailId  = emailSummary.id;
+    state.currentEmail    = emailSummary;
+    state.threadVisible   = false;
 
-    // Show panel immediately with cached data
     populateDetailPanel(emailSummary);
     document.getElementById('detailPanel').classList.remove('hidden');
     document.body.style.overflow = 'hidden';
 
-    // Load full detail (with HTML body)
+    // Load full detail
     try {
       const detail = await ApiClient.getEmailDetail(emailSummary.id);
       state.currentEmail = { ...emailSummary, ...detail };
@@ -288,14 +266,13 @@ const App = (() => {
       renderAttachments(detail.attachments || []);
     } catch {}
 
-    // Start AI summary
     loadAiSummary();
   }
 
   function populateDetailPanel(email) {
     document.getElementById('detailSubject').textContent = email.subject;
-    document.getElementById('detailFrom').textContent = `${email.sender} <${email.senderEmail}>`;
-    document.getElementById('detailDate').textContent = formatDate(email.receivedDateTime, true);
+    document.getElementById('detailFrom').textContent   = `${email.sender} <${email.senderEmail}>`;
+    document.getElementById('detailDate').textContent   = formatDate(email.receivedDateTime, true);
 
     const pb = document.getElementById('detailPriority');
     pb.className = `detail-priority-badge ${email.priority}`;
@@ -307,22 +284,28 @@ const App = (() => {
 
     document.getElementById('emailBodyFrame').textContent = email.bodyPreview || '';
 
-    // Reset AI
+    // Reset UI
     document.getElementById('aiLoading').classList.remove('hidden');
     document.getElementById('aiContent').classList.add('hidden');
     document.getElementById('actionFeedback').classList.add('hidden');
     document.getElementById('actionFeedback').className = 'action-feedback hidden';
     document.getElementById('actionComment').value = '';
 
+    // Thread panel reset
+    const threadPanel = document.getElementById('threadPanel');
+    if (threadPanel) { threadPanel.innerHTML = ''; threadPanel.classList.add('hidden'); }
+
     // Disable actions if already handled
     const actionBar = document.getElementById('actionBar');
-    actionBar.style.opacity = email.status !== 'pending' ? '0.5' : '1';
-    actionBar.querySelectorAll('button').forEach(b => b.disabled = email.status !== 'pending');
+    const isDone = email.status !== 'pending' && email.status !== 'needs_info';
+    actionBar.style.opacity = isDone ? '0.5' : '1';
+    actionBar.querySelectorAll('button').forEach(b => b.disabled = isDone);
   }
 
+  // ── Attachments ───────────────────────────────────────────
   function renderAttachments(attachments) {
     const section = document.getElementById('attachmentsSection');
-    const list = document.getElementById('attachmentsList');
+    const list    = document.getElementById('attachmentsList');
 
     if (!attachments || attachments.length === 0) {
       section.classList.add('hidden');
@@ -331,26 +314,179 @@ const App = (() => {
     section.classList.remove('hidden');
 
     list.innerHTML = attachments.map(att => {
-      const icon = attIcon(att.contentType, att.name);
-      const size = att.size ? formatBytes(att.size) : '';
+      const icon  = attIcon(att.contentType, att.name);
+      const size  = att.size ? formatBytes(att.size) : '';
       const dlUrl = ApiClient.getAttachmentDownloadUrl(state.currentEmailId, att.id);
       return `
-        <div class="attachment-item">
-          <span class="att-icon">${icon}</span>
-          <div class="att-info">
-            <div class="att-name">${escHtml(att.name)}</div>
-            <div class="att-meta">${att.contentType || ''} ${size ? '· ' + size : ''}</div>
-          </div>
-          <div class="att-actions">
-            <a href="${dlUrl}" target="_blank" download>
-              <button class="btn-att primary">⬇ Download</button>
-            </a>
-          </div>
+  <div class="attachment-wrapper">
+
+    <div class="attachment-item" id="att-${att.id}">
+      <span class="att-icon">${icon}</span>
+
+      <div class="att-info">
+        <div class="att-name">${escHtml(att.name)}</div>
+        <div class="att-meta">
+          ${att.contentType || ''} ${size ? '· ' + size : ''}
         </div>
-      `;
+      </div>
+
+      <div class="att-actions">
+        <button
+          class="btn-att"
+          onclick="App.summarizeAttachment('${att.id}','${escHtml(att.name)}')"
+        >
+          🤖 Summarize
+        </button>
+
+        <a href="${dlUrl}" target="_blank" download>
+          <button class="btn-att primary">
+            ⬇ Download
+          </button>
+        </a>
+      </div>
+    </div>
+
+    <div class="att-summary hidden" id="att-summary-${att.id}"></div>
+
+  </div>
+`;
     }).join('');
   }
 
+  async function summarizeAttachment(attachmentId, attachmentName) {
+    if (!state.currentEmailId) return;
+    const summaryEl = document.getElementById(`att-summary-${attachmentId}`);
+    if (!summaryEl) return;
+
+    summaryEl.classList.remove('hidden');
+    summaryEl.innerHTML = '<span class="spinner-inline"></span> Summarizing document…';
+
+    try {
+      const result = await ApiClient.summarizeAttachment(
+        state.currentEmailId, attachmentId, attachmentName
+      );
+      summaryEl.innerHTML = `
+        <div class="att-summary-box">
+          <strong>📄 Document Summary — ${escHtml(attachmentName)}</strong>
+          <p>${escHtml(result.summary || result.attachment_summary || 'No summary available.')}</p>
+          ${result.key_points?.length
+            ? `<ul>${result.key_points.map(p => `<li>${escHtml(p)}</li>`).join('')}</ul>`
+            : ''}
+        </div>`;
+    } catch (e) {
+      summaryEl.innerHTML = `<span style="color:var(--red)">Failed: ${e.message}</span>`;
+    }
+  }
+
+  // ── Thread Trail ──────────────────────────────────────────
+  async function toggleThread() {
+    const threadPanel = document.getElementById('threadPanel');
+    if (!threadPanel) return;
+
+    state.threadVisible = !state.threadVisible;
+    const btn = document.getElementById('btnThread');
+    if (!state.threadVisible) {
+      threadPanel.classList.add('hidden');
+      if (btn) btn.textContent = '📧 View Thread';
+      return;
+    }
+
+    threadPanel.classList.remove('hidden');
+    if (btn) btn.textContent = '📧 Hide Thread';
+    threadPanel.innerHTML = '<div class="thread-loading"><span class="spinner-inline"></span> Loading thread…</div>';
+
+    try {
+      const data = await ApiClient.getEmailThread(state.currentEmailId);
+      renderThread(data.thread, threadPanel);
+    } catch (e) {
+      threadPanel.innerHTML = `<p style="color:var(--red);padding:12px">Failed to load thread: ${e.message}</p>`;
+    }
+  }
+
+  function renderThread(thread, container) {
+    if (!thread || thread.length === 0) {
+      container.innerHTML = '<p style="padding:12px;color:var(--muted)">No thread history available.</p>';
+      return;
+    }
+
+    const ACTION_COLORS = {
+      approve:      '#16a34a',
+      reject:       '#dc2626',
+      request_info: '#d97706',
+    };
+    const ACTION_LABELS = {
+      approve:      'Approved',
+      reject:       'Rejected',
+      request_info: 'Requested Info',
+    };
+
+    // Role → CSS class + label
+    const ROLE_CLASS = {
+      original:       'thread-original',
+      our_reply:      'thread-ours',
+      their_response: 'thread-their-response',  // ← sender replied back to us
+    };
+    const ROLE_BADGE = {
+      original:       { text: 'Original Request', color: '#92400e', bg: '#fef3c7', border: '#fde68a' },
+      their_response: { text: '💬 Their Reply', color: '#1d4ed8', bg: '#eff6ff', border: '#bfdbfe' },
+    };
+
+    container.innerHTML = `
+      <div class="thread-header">
+        <h3>📧 Conversation Thread (${thread.length} message${thread.length !== 1 ? 's' : ''})</h3>
+        <p class="thread-subhead">Full history: original request → your replies → their responses</p>
+      </div>
+      <div class="thread-list">
+        ${thread.map((msg) => {
+          const role        = msg.msg_role || (msg.is_our_reply ? 'our_reply' : msg.is_original ? 'original' : 'their_response');
+          const isOurs      = role === 'our_reply';
+          const isOriginal  = role === 'original';
+          const isTheirResp = role === 'their_response';
+
+          const actionColor = msg.action_type ? ACTION_COLORS[msg.action_type] : null;
+          const actionLabel = msg.action_type ? ACTION_LABELS[msg.action_type] : null;
+          const roleBadge   = ROLE_BADGE[role];
+          const roleClass   = ROLE_CLASS[role] || 'thread-theirs';
+
+          const avatarLetter = (msg.sender || '?')[0].toUpperCase();
+          const avatarStyle  = isOurs      ? 'background:#16a34a'
+                             : isTheirResp ? 'background:#2563eb'
+                             : 'background:var(--accent)';
+
+          return `
+            <div class="thread-message ${roleClass}">
+              ${isTheirResp ? '<div class="thread-response-indicator">↩ They responded to your request</div>' : ''}
+              <div class="thread-msg-header">
+                <div class="thread-msg-avatar" style="${avatarStyle}">${avatarLetter}</div>
+                <div class="thread-msg-meta">
+                  <span class="thread-msg-sender">${escHtml(msg.sender)}</span>
+                  <span class="thread-msg-time">${formatDate(msg.received_at, true)}</span>
+                </div>
+                ${roleBadge
+                  ? `<span class="thread-role-badge" style="background:${roleBadge.bg};color:${roleBadge.color};border:1px solid ${roleBadge.border}">${roleBadge.text}</span>`
+                  : ''}
+                ${actionLabel
+                  ? `<span class="thread-action-badge" style="background:${actionColor}20;color:${actionColor};border:1px solid ${actionColor}40">${actionLabel}</span>`
+                  : ''}
+              </div>
+              <div class="thread-msg-subject">${escHtml(msg.subject)}</div>
+              <div class="thread-msg-body ${isTheirResp ? 'thread-response-body' : ''}">${escHtml(msg.body_preview)}</div>
+              ${isOurs && msg.enhanced_html
+                ? `<div class="thread-enhanced-toggle">
+                     <button class="btn-att" onclick="this.nextElementSibling.classList.toggle('hidden')">
+                       🖊 View Sent HTML
+                     </button>
+                     <div class="thread-enhanced-html hidden">${msg.enhanced_html}</div>
+                   </div>`
+                : ''}
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
+  }
+
+  // ── AI Summary ────────────────────────────────────────────
   async function loadAiSummary() {
     if (!state.currentEmail) return;
     const email = state.currentEmail;
@@ -360,13 +496,24 @@ const App = (() => {
 
     try {
       const summary = await ApiClient.summarizeEmail(
-        email.id,
-        email.subject,
+        email.id, email.subject,
         email.body || email.bodyPreview || '',
         email.senderEmail || email.sender,
       );
 
-      document.getElementById('aiEmailSummary').textContent = summary.email_summary || '—';
+      const summaryText = summary.email_summary || '';
+
+      const formatted = summaryText
+        .split(/\. |\n|•/)
+        .filter(s => s.trim().length > 0)
+        .map(item => `<li>${escHtml(item.trim())}</li>`)
+        .join('');
+
+      document.getElementById('aiEmailSummary').innerHTML = `
+        <ul class="smart-summary-list">
+          ${formatted}
+        </ul>
+      `;
 
       const docSection = document.getElementById('aiDocSection');
       if (summary.document_summary) {
@@ -376,9 +523,8 @@ const App = (() => {
         docSection.classList.add('hidden');
       }
 
-
-      const pointsList = document.getElementById('aiDecisionPoints');
       const points = summary.key_decision_points || [];
+      const pointsList = document.getElementById('aiDecisionPoints');
       if (points.length > 0) {
         pointsList.innerHTML = points.map(p => `<li>${escHtml(p)}</li>`).join('');
         document.getElementById('aiDecisionSection').classList.remove('hidden');
@@ -399,31 +545,55 @@ const App = (() => {
     }
   }
 
-  function regenerateSummary() {
-    loadAiSummary();
-  }
+  function regenerateSummary() { loadAiSummary(); }
 
   function closeDetail() {
     document.getElementById('detailPanel').classList.add('hidden');
     document.body.style.overflow = '';
     state.currentEmailId = null;
-    state.currentEmail = null;
+    state.currentEmail   = null;
+    state.threadVisible  = false;
   }
 
   // ── Actions ───────────────────────────────────────────────
   async function performAction(action) {
     if (!state.currentEmailId) return;
-    const comment = document.getElementById('actionComment').value.trim();
+    const comment  = document.getElementById('actionComment').value.trim();
+    const email    = state.currentEmail || {};
 
     const feedback = document.getElementById('actionFeedback');
-    feedback.className = 'action-feedback';
-    feedback.textContent = 'Sending…';
+    feedback.className   = 'action-feedback';
+    feedback.innerHTML   = '⏳ Enhancing with AI and sending…';
     feedback.classList.remove('hidden');
 
     try {
-      const result = await ApiClient.performAction(state.currentEmailId, action, comment);
+      const result = await ApiClient.performAction(
+        state.currentEmailId, action, comment,
+        {
+          subject:        email.subject        || '',
+          sender:         email.senderEmail    || email.sender || '',
+          bodyPreview:    email.bodyPreview    || '',
+          conversationId: email.conversationId || '',
+          receivedAt:     email.receivedDateTime || '',
+        }
+      );
+
       feedback.className = 'action-feedback success';
-      feedback.textContent = `✓ ${result.message}`;
+      feedback.innerHTML = `✓ ${result.message}`;
+
+      // Show preview of what was sent
+      if (result.enhanced_html) {
+        const previewDiv = document.createElement('div');
+        previewDiv.className = 'sent-html-preview';
+        previewDiv.innerHTML = `
+          <div class="sent-preview-toggle">
+            <button class="btn-att" onclick="this.nextElementSibling.classList.toggle('hidden')">
+              🖊 View AI-Enhanced Reply
+            </button>
+            <div class="sent-preview-body hidden">${result.enhanced_html}</div>
+          </div>`;
+        feedback.appendChild(previewDiv);
+      }
 
       // Disable buttons
       const actionBar = document.getElementById('actionBar');
@@ -435,14 +605,12 @@ const App = (() => {
       sb.className = `detail-status-badge ${result.status}`;
       sb.textContent = result.status.charAt(0).toUpperCase() + result.status.slice(1);
 
-      // Update in-memory email list
+      // Update in-memory list
       const idx = state.emails.findIndex(e => e.id === state.currentEmailId);
       if (idx !== -1) state.emails[idx].status = result.status;
 
       showToast(result.message, 'success');
       await loadStats();
-
-      // Reload email list after short delay
       setTimeout(() => loadApprovalEmails(), 1500);
     } catch (e) {
       feedback.className = 'action-feedback error';
@@ -452,11 +620,8 @@ const App = (() => {
 
   // ── Refresh ───────────────────────────────────────────────
   async function refresh() {
-    if (state.currentSection === 'approval') {
-      await loadApprovalEmails();
-    } else {
-      await loadOtherEmails();
-    }
+    if (state.currentSection === 'approval') await loadApprovalEmails();
+    else await loadOtherEmails();
     showToast('Refreshed', 'success');
   }
 
@@ -471,7 +636,6 @@ const App = (() => {
   }
 
   function sanitizeHtml(html) {
-    // Simple sanitizer — remove script/iframe tags
     return html
       .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
       .replace(/<iframe[^>]*>[\s\S]*?<\/iframe>/gi, '')
@@ -482,31 +646,27 @@ const App = (() => {
     if (!isoStr) return '—';
     const d = new Date(isoStr);
     if (long) return d.toLocaleString();
-    const now = new Date();
+    const now  = new Date();
     const diff = now - d;
-    if (diff < 3600_000) return Math.floor(diff / 60_000) + 'm ago';
-    if (diff < 86_400_000) return Math.floor(diff / 3600_000) + 'h ago';
-    if (diff < 604_800_000) return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+    if (diff < 3_600_000)    return Math.floor(diff / 60_000) + 'm ago';
+    if (diff < 86_400_000)   return Math.floor(diff / 3_600_000) + 'h ago';
+    if (diff < 604_800_000)  return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
     return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
   }
 
   function formatBytes(bytes) {
     if (!bytes) return '';
-    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024)    return bytes + ' B';
     if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
     return (bytes / 1048576).toFixed(1) + ' MB';
   }
 
-  function priorityLabel(p) {
-    return { high: 'High', medium: 'Medium', low: 'Low' }[p] || p;
-  }
-  function priorityEmoji(p) {
-    return { high: '🔴', medium: '🟠', low: '🟢' }[p] || '';
-  }
+  function priorityLabel(p) { return { high: 'High', medium: 'Medium', low: 'Low' }[p] || p; }
+  function priorityEmoji(p) { return { high: '🔴', medium: '🟠', low: '🟢' }[p] || ''; }
 
   function attIcon(contentType = '', name = '') {
     const n = name.toLowerCase();
-    if (n.endsWith('.pdf') || contentType.includes('pdf')) return '📄';
+    if (n.endsWith('.pdf') || contentType.includes('pdf'))  return '📄';
     if (n.endsWith('.docx') || n.endsWith('.doc') || contentType.includes('word')) return '📝';
     if (n.endsWith('.xlsx') || n.endsWith('.xls') || contentType.includes('excel')) return '📊';
     if (n.endsWith('.txt')) return '🗒';
@@ -526,11 +686,11 @@ const App = (() => {
   // ── Bootstrap ─────────────────────────────────────────────
   document.addEventListener('DOMContentLoaded', init);
 
-  // Public API
   return {
     login, logout, showSection,
     setPreset, toggleCustomRange, applyCustomRange, applyDuration,
-    openEmailDetail, closeDetail, performAction,
-    regenerateSummary, refresh,
+    openEmailDetail, closeDetail,
+    performAction, regenerateSummary, refresh,
+    summarizeAttachment, toggleThread,
   };
 })();

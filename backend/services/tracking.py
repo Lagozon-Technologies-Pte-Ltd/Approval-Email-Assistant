@@ -1,45 +1,29 @@
 """
-Tracking Store - Maintains email approval status
-(In-memory; replace with Redis or DB for production)
+Tracking Store - now backed by SQLite (persistent across restarts).
+Keeps the same interface that actions.py / emails.py expect.
 """
 
-from datetime import datetime
-from threading import Lock
+from services.db import (
+    get_status,
+    set_status,
+    get_stats_for_period,
+)
 
 
 class TrackingStore:
-    def __init__(self):
-        self._store: dict[str, dict] = {}
-        self._lock = Lock()
+    """Thin wrapper so existing code needs no changes."""
 
     def get_status(self, email_id: str) -> str:
-        with self._lock:
-            entry = self._store.get(email_id)
-            return entry["status"] if entry else "pending"
+        return get_status(email_id)
 
-    def set_status(self, email_id: str, status: str):
-        with self._lock:
-            self._store[email_id] = {
-                "status": status,
-                "updated_at": datetime.utcnow().isoformat(),
-            }
+    def set_status(self, email_id: str, status: str, conversation_id: str = None):
+        set_status(email_id, status, conversation_id)
 
     def get_stats(self) -> dict:
-        with self._lock:
-            total = len(self._store)
-            approved = sum(1 for v in self._store.values() if v["status"] == "approved")
-            rejected = sum(1 for v in self._store.values() if v["status"] == "rejected")
-            pending = sum(1 for v in self._store.values() if v["status"] == "pending")
-            return {
-                "total_tracked": total,
-                "approved": approved,
-                "rejected": rejected,
-                "pending": pending,
-            }
+        return get_stats_for_period()
 
-    def get_all(self) -> dict:
-        with self._lock:
-            return dict(self._store)
+    def get_stats_for_period(self, start_iso=None, end_iso=None) -> dict:
+        return get_stats_for_period(start_iso, end_iso)
 
 
 # Singleton

@@ -216,3 +216,59 @@ async def summarize_batch(email_ids: list[str], request: Request):
             results[email_id] = {"error": str(e)}
 
     return results
+
+
+class AttachmentSummaryRequest(BaseModel):
+    email_id: str
+    attachment_id: str
+    attachment_name: str = ""
+
+
+@router.post("/attachment")
+async def summarize_attachment(req: AttachmentSummaryRequest, request: Request):
+    """Generate a focused AI summary for a single attachment."""
+    session_id = request.cookies.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    access_token = await get_valid_access_token(session_id)
+
+    # Fetch this specific attachment
+    att_meta = {"id": req.attachment_id, "name": req.attachment_name, "contentType": ""}
+    text = await _fetch_attachment_for_summary(access_token, req.email_id, att_meta)
+
+    if not text.strip():
+        return {
+            "summary": "Could not extract text from this attachment.",
+            "key_points": [],
+            "attachment_name": req.attachment_name,
+        }
+
+    system_prompt = """You are a document analyst. Summarize the given document content.
+Respond ONLY in this JSON format (no markdown, no fences):
+{
+  "summary": "2-3 sentence summary of the document",
+  "key_points": ["point 1", "point 2", "point 3"],
+  "document_type": "e.g. Invoice / Contract / Report / Form"
+}"""
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"Document: {req.attachment_name}\n\nContent:\n{text[:4000]}"},
+    ]
+
+    raw = await _call_openai(messages, max_tokens=600)
+
+    import json
+    try:
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("```")[1]
+            if cleaned.lower().startswith("json"):
+                cleaned = cleaned[4:]
+        result = json.loads(cleaned)
+    except Exception:
+        result = {"summary": raw, "key_points": [], "document_type": "Unknown"}
+
+    result["attachment_name"] = req.attachment_name
+    return result

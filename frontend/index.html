@@ -6,7 +6,7 @@
 <title>Approval AI — Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/css/main.css">
+<link rel="stylesheet" href="/css/main.css?v=3">
 </head>
 <body>
 
@@ -82,6 +82,10 @@
       <div class="stat-card stat-rejected">
         <div class="stat-val" id="statRejected">—</div>
         <div class="stat-label">Rejected</div>
+      </div>
+      <div class="stat-card stat-info">
+        <div class="stat-val" id="statNeedsInfo">—</div>
+        <div class="stat-label">Needs Info</div>
       </div>
     </div>
 
@@ -230,10 +234,19 @@
           <div class="email-body-frame" id="emailBodyFrame"></div>
         </div>
 
+        <!-- Thread Trail -->
+        <div class="thread-trail-section">
+          <button class="btn-thread-toggle" id="btnThread" onclick="App.toggleThread()">
+            📧 View Thread &amp; History
+          </button>
+          <div id="threadPanel" class="thread-panel hidden"></div>
+        </div>
+
         <!-- Action Buttons -->
         <div class="action-bar" id="actionBar">
           <div class="action-comment-row">
-            <input type="text" id="actionComment" placeholder="Add comment (optional)…" class="action-comment-input" />
+            <input type="text" id="actionComment" placeholder="Add comment — will be AI-enhanced before sending…" class="action-comment-input" />
+            <small class="comment-hint">✨ Your comment will be polished into a professional HTML email by AI</small>
           </div>
           <div class="action-buttons">
             <button class="btn-approve" onclick="App.performAction('approve')">
@@ -258,7 +271,7 @@
 <!-- TOAST NOTIFICATIONS -->
 <div id="toastContainer" class="toast-container"></div>
 
-<script src="/js/api.js"></script>
-<script src="/js/app.js"></script>
+<script src="/js/api.js?v=3"></script>
+<script src="/js/app.js?v=3"></script>
 </body>
 </html>

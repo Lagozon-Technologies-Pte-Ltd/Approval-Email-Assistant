@@ -70,12 +70,34 @@ def _build_time_filter(
 
 def _is_approval_email(email: dict) -> bool:
     """Check if email is approval-related."""
+    
+    EXCLUDED_KEYWORDS = [
+    "approved",
+    "rejected",
+    "need more info",
+    "needs more info",
+    "request completed",
+    "approval completed",
+    "declined",
+    "cancelled",
+    "completed",
+    "[APPROVAL-DECISION]",
+]
+    
     subject = (email.get("subject") or "").lower()
     body = (email.get("bodyPreview") or "").lower()
     has_attachments = email.get("hasAttachments", False)
 
+    combined_text = f"{subject} {body}"
+
+    # FIRST: Exclude completed/status-update mails
+    for kw in EXCLUDED_KEYWORDS:
+        if kw in combined_text:
+            return False
+
+    # THEN: Include actual approval-request mails
     for kw in APPROVAL_KEYWORDS:
-        if kw in subject or kw in body:
+        if kw in combined_text:
             return True
 
     if has_attachments:
