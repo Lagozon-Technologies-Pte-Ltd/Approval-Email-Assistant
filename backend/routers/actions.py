@@ -213,11 +213,14 @@ async def perform_action(action_req: ActionRequest, request: Request):
     # 2. Send reply
     await _send_reply(access_token, action_req.email_id, enhanced_html)
 
-    # 3. Persist status
+    # 3. Persist status — pass received_at so the DB knows WHEN the email
+    #    originally arrived (used by stats: pending counts by arrival time,
+    #    approved/rejected/needs_info count by when the decision was made).
     new_status = STATUS_MAP[action_req.action]
     tracking_store.set_status(
         action_req.email_id, new_status,
         conversation_id=action_req.conversation_id or None,
+        received_at=action_req.received_at or None,
     )
 
     # 4. Log action
@@ -266,7 +269,7 @@ async def get_action_stats(
     Return accurate queue counts by fetching live approval emails from Graph API
     and resolving each one's status from the DB (defaulting to 'pending' for
     untracked emails). Accepts the same time-filter params as the emails endpoint
-    so stats always match the currently visible email list.
+    so the stat card numbers always match the currently selected time range.
     """
     session_id = request.cookies.get("session_id")
     if not session_id:
@@ -280,10 +283,9 @@ async def get_action_stats(
     )
     from routers.auth import get_valid_access_token
 
-    # If no filter param provided at all, default to "1w" so the
-    # dashboard shows meaningful counts on first load.
+    # If no filter param provided at all, default to "24h" (matches default UI state)
     has_any_filter = any([preset, start_dt, end_dt, duration_value, duration_unit])
-    effective_preset = preset if has_any_filter else "1w"
+    effective_preset = preset if has_any_filter else "24h"
 
     try:
         access_token = await get_valid_access_token(session_id)
@@ -297,18 +299,33 @@ async def get_action_stats(
         raw_emails = await _fetch_emails_from_graph(access_token, start_iso, end_iso)
         approval_emails = [e for e in raw_emails if _is_approval_email(e)]
 
-        counts = {"pending": 0, "approved": 0, "rejected": 0, "needs_info": 0}
+        # Seed received_at for every email we see from Graph API so the DB
+        # can correctly count pending-by-arrival and actioned-by-decision-time.
+        # set_status with status="pending" will only INSERT if not already tracked
+        # (ON CONFLICT preserves existing status and never overwrites received_at once set).
         for email in approval_emails:
-            # get_status returns "pending" for any email not yet in the DB,
-            # so ALL live approval emails are counted correctly from the start.
-            status = tracking_store.get_status(email["id"])
-            if status in counts:
-                counts[status] += 1
+            existing = tracking_store.get_status(email["id"])
+            if existing == "pending":
+                # Upsert with pending — this seeds received_at without overwriting
+                # any existing approved/rejected/needs_info status.
+                tracking_store.set_status(
+                    email["id"],
+                    "pending",
+                    received_at=email.get("receivedDateTime"),
+                )
+
+        # Now query the DB with the correct dual logic:
+        #   pending   → received_at in range, still pending
+        #   approved/rejected/needs_info → updated_at (decision time) in range
+        stats = tracking_store.get_stats_for_period(start_iso, end_iso)
 
         return {
-            "total_tracked": len(approval_emails),
+            "total_tracked": stats["total_tracked"],
             "filter_range": {"start": start_iso, "end": end_iso},
-            **counts,
+            "pending":    stats["pending"],
+            "approved":   stats["approved"],
+            "rejected":   stats["rejected"],
+            "needs_info": stats["needs_info"],
         }
 
     except Exception:

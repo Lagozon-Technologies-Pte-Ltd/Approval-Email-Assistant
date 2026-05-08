@@ -69,37 +69,65 @@ def _build_time_filter(
 
 
 def _is_approval_email(email: dict) -> bool:
-    """Check if email is approval-related."""
-    
+    """Check if email is an approval REQUEST (not a decision/reply/completion)."""
+
+    # These patterns in the body preview indicate the email IS a decision or status
+    # notification — not an incoming approval request.
+    BODY_EXCLUSION_PREFIXES = [
+        "approval granted",
+        "your request for",
+        "we are pleased to inform",
+        "has been approved",
+        "has been rejected",
+        "has been declined",
+        "request has been",
+        "approval has been",
+    ]
+
+    # These anywhere in subject OR body mean it's a completed/notif email
     EXCLUDED_KEYWORDS = [
-    "approved",
-    "rejected",
-    "need more info",
-    "needs more info",
-    "request completed",
-    "approval completed",
-    "declined",
-    "cancelled",
-    "completed",
-    "[APPROVAL-DECISION]",
-]
-    
+        "need more info",
+        "needs more info",
+        "request completed",
+        "approval completed",
+        "cancelled",
+        "[approval-decision]",
+    ]
+
+    # Subject prefixes that indicate a reply thread we sent (not incoming request)
+    SUBJECT_REPLY_EXCLUSIONS = [
+        "re: approval granted",
+        "re: request rejected",
+        "re: additional information",
+    ]
+
     subject = (email.get("subject") or "").lower()
     body = (email.get("bodyPreview") or "").lower()
     has_attachments = email.get("hasAttachments", False)
 
-    combined_text = f"{subject} {body}"
+    # 1. Exclude if body preview starts with a decision/completion pattern
+    body_stripped = body.strip()
+    for prefix in BODY_EXCLUSION_PREFIXES:
+        if body_stripped.startswith(prefix):
+            return False
 
-    # FIRST: Exclude completed/status-update mails
+    # 2. Exclude if subject indicates it's a reply we sent
+    for excl in SUBJECT_REPLY_EXCLUSIONS:
+        if subject.startswith(excl):
+            return False
+
+    # 3. Exclude if keyword found in combined text
+    combined_text = f"{subject} {body}"
     for kw in EXCLUDED_KEYWORDS:
         if kw in combined_text:
             return False
 
-    # THEN: Include actual approval-request mails
+    # 4. Include if matches approval request keywords
     for kw in APPROVAL_KEYWORDS:
         if kw in combined_text:
             return True
 
+    # 5. Include if has attachments (likely needs review)
     if has_attachments:
         return True
 
@@ -195,6 +223,32 @@ def _format_email(raw: dict, attachments: list = None) -> dict:
     }
 
 
+async def _fetch_email_by_id(access_token: str, email_id: str) -> Optional[dict]:
+    """Fetch a single email from Graph API by its ID."""
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Prefer": 'outlook.body-content-type="text"',
+    }
+    params = {
+        "$select": (
+            "id,subject,from,receivedDateTime,bodyPreview,body,"
+            "hasAttachments,isRead,isDraft,importance,conversationId"
+        )
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{settings.GRAPH_API_BASE}/me/messages/{email_id}",
+                headers=headers,
+                params=params,
+            )
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception:
+        pass
+    return None
+
+
 @router.get("/approval")
 async def get_approval_emails(
     request: Request,
@@ -205,14 +259,81 @@ async def get_approval_emails(
     duration_unit: Optional[str] = Query(None, description="hours, days, weeks, months"),
     queue: Optional[str] = Query(None, description="pending, approved, rejected, needs_info"),
 ):
-    """Fetch approval-related emails with time filtering and optional queue filter."""
+    """
+    Fetch approval emails.
+
+    - pending queue:    fetch emails from Graph API within the selected time range.
+    - approved / rejected / needs_info queues:
+                        fetch ALL ever-actioned emails from the local DB regardless
+                        of time range, then pull their details from Graph API.
+                        This means once you approve an email it's always visible.
+    """
     session_id = request.cookies.get("session_id")
     if not session_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     access_token = await get_valid_access_token(session_id)
-    start_iso, end_iso = _build_time_filter(preset, start_dt, end_dt, duration_value, duration_unit)
+    VALID_QUEUES = {"pending", "approved", "rejected", "needs_info"}
 
+    # ── Actioned queues (approved / rejected / needs_info) ────────────────────
+    # Pull from DB (all-time), then hydrate from Graph API.
+    if queue and queue in VALID_QUEUES and queue != "pending":
+        db_records = tracking_store.get_all_actioned_email_ids(queue)
+        result = []
+        for record in db_records:
+            raw = await _fetch_email_by_id(access_token, record["email_id"])
+            if raw:
+                attachments = []
+                if raw.get("hasAttachments"):
+                    attachments = await _fetch_attachments_meta(access_token, raw["id"])
+                result.append(_format_email(raw, attachments))
+            else:
+                # Email may have been deleted/moved — build a minimal placeholder
+                # so it still appears in the list with correct status
+                result.append({
+                    "id": record["email_id"],
+                    "subject": "(Email no longer available)",
+                    "sender": "—",
+                    "senderEmail": "",
+                    "receivedDateTime": record.get("received_at") or record.get("updated_at") or "",
+                    "bodyPreview": "",
+                    "body": "",
+                    "hasAttachments": False,
+                    "isRead": True,
+                    "importance": "normal",
+                    "conversationId": "",
+                    "priority": "low",
+                    "status": queue,
+                    "attachments": [],
+                })
+
+        # Group by time of the original email (receivedDateTime)
+        now = datetime.now(timezone.utc)
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start  = today_start - timedelta(days=now.weekday())
+        grouped = {"today": [], "this_week": [], "older": []}
+        for e in result:
+            try:
+                rd = datetime.fromisoformat(e["receivedDateTime"].replace("Z", "+00:00"))
+            except Exception:
+                grouped["older"].append(e)
+                continue
+            if rd >= today_start:
+                grouped["today"].append(e)
+            elif rd >= week_start:
+                grouped["this_week"].append(e)
+            else:
+                grouped["older"].append(e)
+
+        return {
+            "emails": result,
+            "grouped": grouped,
+            "total": len(result),
+            "filter_range": {"start": "", "end": ""},
+        }
+
+    # ── Pending queue (and default / no queue) — time-range filtered ──────────
+    start_iso, end_iso = _build_time_filter(preset, start_dt, end_dt, duration_value, duration_unit)
     raw_emails = await _fetch_emails_from_graph(access_token, start_iso, end_iso)
     approval_emails = [e for e in raw_emails if _is_approval_email(e)]
 
@@ -223,10 +344,9 @@ async def get_approval_emails(
             attachments = await _fetch_attachments_meta(access_token, email["id"])
         result.append(_format_email(email, attachments))
 
-    # Filter by queue/status if specified
-    VALID_QUEUES = {"pending", "approved", "rejected", "needs_info"}
-    if queue and queue in VALID_QUEUES:
-        result = [e for e in result if e["status"] == queue]
+    # For pending queue filter out anything already actioned
+    if queue == "pending":
+        result = [e for e in result if e["status"] == "pending"]
 
     # Group by time
     now = datetime.now(timezone.utc)

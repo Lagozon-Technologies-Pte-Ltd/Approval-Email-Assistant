@@ -89,9 +89,11 @@ const App = (() => {
       document.getElementById('statRejected').textContent  = stats.rejected  ?? '0';
       const needsEl = document.getElementById('statNeedsInfo');
       if (needsEl) needsEl.textContent = stats.needs_info ?? '0';
+
+      // Update sidebar approval badge to show total pending count
+      document.getElementById('approvalCount').textContent = stats.pending ?? '0';
     } catch (err) {
       console.error('[loadStats] Failed to load stats:', err);
-      // Show zeros instead of dashes so user knows something responded
       ['statPending','statApproved','statRejected','statNeedsInfo'].forEach(id => {
         const el = document.getElementById(id);
         if (el && el.textContent === '—') el.textContent = '0';

@@ -5,7 +5,6 @@ Handles: email statuses, action history, thread/trail comments
 """
 
 import sqlite3
-import json
 import os
 from datetime import datetime, timezone
 from threading import Lock
@@ -24,15 +23,16 @@ def _get_conn() -> sqlite3.Connection:
 
 
 def init_db():
-    """Create tables if they don't exist."""
+    """Create tables if they don't exist, and migrate schema safely."""
     with _lock:
         conn = _get_conn()
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS email_status (
-                email_id    TEXT PRIMARY KEY,
-                status      TEXT NOT NULL DEFAULT 'pending',
-                updated_at  TEXT NOT NULL,
-                conversation_id TEXT
+                email_id        TEXT PRIMARY KEY,
+                status          TEXT NOT NULL DEFAULT 'pending',
+                updated_at      TEXT NOT NULL,
+                conversation_id TEXT,
+                received_at     TEXT
             );
 
             CREATE TABLE IF NOT EXISTS action_log (
@@ -63,6 +63,14 @@ def init_db():
             );
         """)
         conn.commit()
+
+        # Safe migration: add received_at to email_status if upgrading from old schema
+        try:
+            conn.execute("ALTER TABLE email_status ADD COLUMN received_at TEXT")
+            conn.commit()
+        except Exception:
+            pass  # Column already exists — no-op
+
         conn.close()
 
 
@@ -78,44 +86,99 @@ def get_status(email_id: str) -> str:
         return row["status"] if row else "pending"
 
 
-def set_status(email_id: str, status: str, conversation_id: str = None):
+def set_status(email_id: str, status: str, conversation_id: str = None, received_at: str = None):
+    """
+    Persist the status for an email.
+    - received_at: the email's original arrival time (ISO string from Graph API).
+      Stored once and never overwritten, so we always know when the email came in.
+    - updated_at:  when this action was taken (now). Used for approved/rejected/
+      needs_info counts so they reflect WHEN the decision was made.
+    """
     now = datetime.now(timezone.utc).isoformat()
     with _lock:
         conn = _get_conn()
         conn.execute("""
-            INSERT INTO email_status (email_id, status, updated_at, conversation_id)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO email_status (email_id, status, updated_at, conversation_id, received_at)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(email_id) DO UPDATE SET
-                status = excluded.status,
-                updated_at = excluded.updated_at,
-                conversation_id = COALESCE(excluded.conversation_id, conversation_id)
-        """, (email_id, status, now, conversation_id))
+                status          = excluded.status,
+                updated_at      = excluded.updated_at,
+                conversation_id = COALESCE(excluded.conversation_id, conversation_id),
+                received_at     = COALESCE(email_status.received_at, excluded.received_at)
+        """, (email_id, status, now, conversation_id, received_at))
         conn.commit()
         conn.close()
 
 
 def get_stats_for_period(start_iso: Optional[str] = None, end_iso: Optional[str] = None) -> dict:
-    """Return counts filtered to emails updated within a time window."""
+    """
+    Mixed-time stats — each status type uses the rule that makes sense for it:
+
+      - pending:               emails received within the time window that are still pending.
+                               Time-range sensitive: only shows what arrived in the selected period.
+                               (filtered by received_at)
+
+      - approved / rejected /
+        needs_info:            ALL actioned emails ever, regardless of time range.
+                               Once you approve/reject something it always shows in the count.
+                               (no time filter applied)
+    """
     with _lock:
         conn = _get_conn()
+
+        # Pending: only within the selected time window (by arrival time)
         if start_iso and end_iso:
-            rows = conn.execute(
-                "SELECT status FROM email_status WHERE updated_at >= ? AND updated_at <= ?",
-                (start_iso, end_iso)
-            ).fetchall()
+            pending_row = conn.execute("""
+                SELECT COUNT(*) as cnt FROM email_status
+                WHERE status = 'pending'
+                AND received_at >= ? AND received_at <= ?
+            """, (start_iso, end_iso)).fetchone()
+            pending_count = pending_row["cnt"] if pending_row else 0
         else:
-            rows = conn.execute("SELECT status FROM email_status").fetchall()
+            pending_row = conn.execute(
+                "SELECT COUNT(*) as cnt FROM email_status WHERE status = 'pending'"
+            ).fetchone()
+            pending_count = pending_row["cnt"] if pending_row else 0
+
+        # Approved / Rejected / Needs Info: ALL TIME — no time filter
+        actioned_rows = conn.execute("""
+            SELECT status, COUNT(*) as cnt FROM email_status
+            WHERE status != 'pending'
+            GROUP BY status
+        """).fetchall()
+
         conn.close()
 
-    statuses = [r["status"] for r in rows]
+    counts = {"approved": 0, "rejected": 0, "needs_info": 0}
+    for row in actioned_rows:
+        if row["status"] in counts:
+            counts[row["status"]] = row["cnt"]
+
+    total = pending_count + sum(counts.values())
     return {
-        "total_tracked": len(statuses),
-        "approved": statuses.count("approved"),
-        "rejected": statuses.count("rejected"),
-        "pending": statuses.count("pending"),
-        "needs_info": statuses.count("needs_info"),
+        "total_tracked": total,
+        "pending":    pending_count,
+        "approved":   counts["approved"],
+        "rejected":   counts["rejected"],
+        "needs_info": counts["needs_info"],
     }
 
+
+
+def get_all_actioned_email_ids(status: str) -> list:
+    """
+    Return ALL email_ids that have ever been set to a given status,
+    along with their received_at. Used by the approved/rejected/needs_info
+    queues so they show every actioned email regardless of time range.
+    """
+    with _lock:
+        conn = _get_conn()
+        rows = conn.execute(
+            "SELECT email_id, received_at, updated_at FROM email_status WHERE status = ? ORDER BY updated_at DESC",
+            (status,)
+        ).fetchall()
+        conn.close()
+    return [dict(r) for r in rows]
 
 # ── Action Log ────────────────────────────────────────────────────────────────
 
@@ -153,7 +216,7 @@ def get_action_log(email_id: str) -> list:
 def add_thread_entry(
     email_id: str,
     conversation_id: str,
-    message_type: str,     # "original", "reply", "follow_up_response"
+    message_type: str,
     sender: str,
     sender_email: str,
     subject: str,
