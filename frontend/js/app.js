@@ -85,12 +85,19 @@ const App = (() => {
     try {
       const preset = state.currentFilter.preset || null;
       const stats = await ApiClient.getStats(preset);
-      document.getElementById('statPending').textContent   = stats.pending   ?? '—';
-      document.getElementById('statApproved').textContent  = stats.approved  ?? '—';
-      document.getElementById('statRejected').textContent  = stats.rejected  ?? '—';
+      document.getElementById('statPending').textContent   = stats.pending   ?? '0';
+      document.getElementById('statApproved').textContent  = stats.approved  ?? '0';
+      document.getElementById('statRejected').textContent  = stats.rejected  ?? '0';
       const needsEl = document.getElementById('statNeedsInfo');
-      if (needsEl) needsEl.textContent = stats.needs_info ?? '—';
-    } catch {}
+      if (needsEl) needsEl.textContent = stats.needs_info ?? '0';
+    } catch (err) {
+      console.error('[loadStats] Failed to load stats:', err);
+      // Show zeros instead of dashes so user knows something responded
+      ['statPending','statApproved','statRejected','statNeedsInfo'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el && el.textContent === '—') el.textContent = '0';
+      });
+    }
   }
 
   // ── Navigation ────────────────────────────────────────────

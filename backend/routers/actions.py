@@ -278,7 +278,7 @@ async def get_action_stats(
 
     try:
         access_token = await get_valid_access_token(session_id)
-        start_iso, end_iso = _build_time_filter(preset or "1w")
+        start_iso, end_iso = _build_time_filter(preset=preset or "1w")
         raw_emails = await _fetch_emails_from_graph(access_token, start_iso, end_iso)
         approval_emails = [e for e in raw_emails if _is_approval_email(e)]
 
