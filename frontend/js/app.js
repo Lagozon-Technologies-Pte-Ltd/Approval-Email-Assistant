@@ -14,12 +14,15 @@ const App = (() => {
   let state = {
     currentSection: 'approval',
     currentFilter: { preset: '24h' },
+    currentQueue: 'pending',
     currentEmailId: null,
     currentEmail: null,
     emails: [],
     grouped: {},
     urgentCount: 0,
     threadVisible: false,
+    _autoRefreshInterval: null,
+    _lastEmailIds: new Set(),
   };
 
   // ── Init ──────────────────────────────────────────────────
@@ -46,6 +49,7 @@ const App = (() => {
     await loadUser();
     await loadStats();
     await loadApprovalEmails();
+    startAutoRefresh();
   }
 
   function showLogin() {
@@ -62,6 +66,7 @@ const App = (() => {
   }
 
   async function logout() {
+    stopAutoRefresh();
     try { await ApiClient.logout(); } catch {}
     showLogin();
   }
@@ -96,7 +101,10 @@ const App = (() => {
     document.getElementById('sectionApproval').classList.toggle('hidden', section !== 'approval');
     document.getElementById('sectionOther').classList.toggle('hidden', section !== 'other');
     document.getElementById('filterBar').classList.toggle('hidden', section !== 'approval');
-    document.getElementById('pageTitle').textContent = section === 'approval' ? 'Approval Emails' : 'Other Emails';
+    const queueLabels = { pending: 'Pending Approvals', approved: 'Approved', rejected: 'Rejected', needs_info: 'Needs Info' };
+    document.getElementById('pageTitle').textContent = section === 'approval'
+      ? (queueLabels[state.currentQueue] || 'Approval Emails')
+      : 'Other Emails';
     document.getElementById('breadcrumb').textContent = '';
     if (section === 'other') loadOtherEmails();
     if (section === 'approval') loadApprovalEmails();
@@ -135,13 +143,40 @@ const App = (() => {
   }
 
   // ── Email Loading ─────────────────────────────────────────
-  async function loadApprovalEmails() {
-    setLoadingState(true);
+  async function loadApprovalEmails(silent = false) {
+    if (!silent) setLoadingState(true);
     try {
-      const data = await ApiClient.getApprovalEmails(state.currentFilter);
+      const params = { ...state.currentFilter, queue: state.currentQueue };
+      const data = await ApiClient.getApprovalEmails(params);
+
+      // Detect new pending emails for toast notification
+      if (state.currentQueue === 'pending' && state._lastEmailIds.size > 0) {
+        const newIds = data.emails.filter(e => !state._lastEmailIds.has(e.id));
+        if (newIds.length > 0) {
+          showToast(`🔔 ${newIds.length} new approval request${newIds.length > 1 ? 's' : ''} received`, 'info');
+          // Briefly highlight new cards after render
+          setTimeout(() => {
+            newIds.forEach(e => {
+              const card = document.querySelector(`[data-email-id="${e.id}"]`);
+              if (card) {
+                card.classList.add('email-card-new');
+                setTimeout(() => card.classList.remove('email-card-new'), 3000);
+              }
+            });
+          }, 200);
+        }
+      }
+      state._lastEmailIds = new Set(data.emails.map(e => e.id));
+
       state.emails  = data.emails;
       state.grouped = data.grouped;
-      renderEmailGroups(data.grouped);
+
+      if (!silent || !state.currentEmailId) {
+        renderEmailGroups(data.grouped);
+      } else {
+        renderEmailGroupsSilent(data.grouped);
+      }
+
       document.getElementById('approvalCount').textContent = data.total;
 
       state.urgentCount = data.emails.filter(e => e.priority === 'high' && e.status === 'pending').length;
@@ -153,12 +188,22 @@ const App = (() => {
         urgentBadge.classList.add('hidden');
       }
     } catch (e) {
-      showToast('Failed to load emails: ' + e.message, 'error');
+      if (!silent) showToast('Failed to load emails: ' + e.message, 'error');
       setLoadingState(false);
     }
     await loadStats();
   }
 
+  // Silent render: update existing cards in-place without resetting scroll
+  function renderEmailGroupsSilent(grouped) {
+    const container = document.getElementById('emailGroups');
+    // Only full re-render if count changed significantly (avoids scroll jump for minor updates)
+    const total = (grouped.today?.length || 0) + (grouped.this_week?.length || 0) + (grouped.older?.length || 0);
+    const currentCards = container.querySelectorAll('.email-card').length;
+    if (Math.abs(total - currentCards) > 0) {
+      renderEmailGroups(grouped);
+    }
+  }
   async function loadOtherEmails() {
     const container = document.getElementById('otherEmailList');
     container.innerHTML = '<div class="loading-state"><div class="spinner"></div><p>Fetching emails…</p></div>';
@@ -198,6 +243,9 @@ const App = (() => {
 
     const total = (grouped.today?.length || 0) + (grouped.this_week?.length || 0) + (grouped.older?.length || 0);
     if (total === 0) {
+      const labels = { pending: 'pending approvals', approved: 'approved emails', rejected: 'rejected emails', needs_info: 'emails needing info' };
+      const msgEl = document.getElementById('emptyStateMsg');
+      if (msgEl) msgEl.textContent = `No ${labels[state.currentQueue] || 'emails'} in the selected time range.`;
       document.getElementById('emptyState').classList.remove('hidden');
       return;
     }
@@ -222,6 +270,7 @@ const App = (() => {
     const card = document.createElement('div');
     card.className = `email-card priority-${email.priority}`;
     card.style.animationDelay = `${idx * 0.04}s`;
+    card.dataset.emailId = email.id;
     card.onclick = () => openEmailDetail(email);
 
     const initial = (email.sender || '?')[0].toUpperCase();
@@ -625,6 +674,37 @@ const App = (() => {
     showToast('Refreshed', 'success');
   }
 
+  // ── Queue Management ──────────────────────────────────────
+  function setQueue(queue) {
+    state.currentQueue = queue;
+    // Update active state on stat cards
+    document.querySelectorAll('.stat-card').forEach(c => c.classList.remove('stat-card-active'));
+    const map = { pending: 'statCardPending', approved: 'statCardApproved', rejected: 'statCardRejected', needs_info: 'statCardNeedsInfo' };
+    const activeCard = document.getElementById(map[queue]);
+    if (activeCard) activeCard.classList.add('stat-card-active');
+    // Update page title
+    const labels = { pending: 'Pending Approvals', approved: 'Approved', rejected: 'Rejected', needs_info: 'Needs Info' };
+    document.getElementById('pageTitle').textContent = labels[queue] || 'Approval Emails';
+    loadApprovalEmails();
+  }
+
+  // ── Auto Refresh ──────────────────────────────────────────
+  function startAutoRefresh() {
+    stopAutoRefresh(); // prevent duplicates
+    state._autoRefreshInterval = setInterval(async () => {
+      if (state.currentSection === 'approval') {
+        await loadApprovalEmails(true);  // silent=true
+      }
+    }, 30000);
+  }
+
+  function stopAutoRefresh() {
+    if (state._autoRefreshInterval) {
+      clearInterval(state._autoRefreshInterval);
+      state._autoRefreshInterval = null;
+    }
+  }
+
   // ── Utilities ──────────────────────────────────────────────
   function escHtml(str) {
     if (!str) return '';
@@ -692,5 +772,6 @@ const App = (() => {
     openEmailDetail, closeDetail,
     performAction, regenerateSummary, refresh,
     summarizeAttachment, toggleThread,
+    setQueue,
   };
 })();

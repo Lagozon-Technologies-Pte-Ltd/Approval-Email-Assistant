@@ -203,8 +203,9 @@ async def get_approval_emails(
     end_dt: Optional[str] = Query(None),
     duration_value: Optional[int] = Query(None),
     duration_unit: Optional[str] = Query(None, description="hours, days, weeks, months"),
+    queue: Optional[str] = Query(None, description="pending, approved, rejected, needs_info"),
 ):
-    """Fetch approval-related emails with time filtering."""
+    """Fetch approval-related emails with time filtering and optional queue filter."""
     session_id = request.cookies.get("session_id")
     if not session_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -221,6 +222,11 @@ async def get_approval_emails(
         if email.get("hasAttachments"):
             attachments = await _fetch_attachments_meta(access_token, email["id"])
         result.append(_format_email(email, attachments))
+
+    # Filter by queue/status if specified
+    VALID_QUEUES = {"pending", "approved", "rejected", "needs_info"}
+    if queue and queue in VALID_QUEUES:
+        result = [e for e in result if e["status"] == queue]
 
     # Group by time
     now = datetime.now(timezone.utc)

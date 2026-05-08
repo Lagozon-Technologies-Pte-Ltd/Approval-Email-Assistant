@@ -1147,3 +1147,38 @@ html, body {
   color: var(--gray-700);
   position: relative;
 }
+/* ── Queue-based stat cards ─────────────────────────────────── */
+.stat-card {
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+.stat-card:hover {
+  background: rgba(255,255,255,0.12);
+  transform: translateY(-1px);
+}
+.stat-card-active {
+  background: rgba(255,255,255,0.18) !important;
+  box-shadow: 0 0 0 2px rgba(255,255,255,0.35);
+  transform: translateY(-1px);
+}
+.stat-card-active .stat-label {
+  color: var(--white);
+  font-weight: 600;
+}
+
+/* ── New email highlight animation ──────────────────────────── */
+@keyframes newEmailPulse {
+  0%   { box-shadow: 0 0 0 0 rgba(59,130,246,0.5); }
+  50%  { box-shadow: 0 0 0 6px rgba(59,130,246,0.15); }
+  100% { box-shadow: 0 0 0 0 rgba(59,130,246,0); }
+}
+.email-card-new {
+  animation: newEmailPulse 1s ease 3;
+  border-left: 3px solid #3b82f6 !important;
+}
+
+/* ── Toast info variant ──────────────────────────────────────── */
+.toast.info {
+  background: #1d4ed8;
+  color: #fff;
+}

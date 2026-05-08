@@ -258,24 +258,56 @@ async def get_action_stats(
     request: Request,
     preset: Optional[str] = Query(None, description="24h, 2d, 1w, 1m"),
 ):
+    """
+    Return accurate queue counts by fetching live approval emails from Graph API
+    and resolving each one's status from the DB (defaulting to 'pending' for
+    untracked emails). This ensures the Pending count reflects reality, not just
+    emails that have been explicitly actioned.
+    """
     session_id = request.cookies.get("session_id")
     if not session_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    if preset:
-        now = datetime.now(timezone.utc)
-        delta_map = {
-            "24h": timedelta(hours=24),
-            "2d": timedelta(days=2),
-            "1w": timedelta(weeks=1),
-            "1m": timedelta(days=30),
-        }
-        delta = delta_map.get(preset, timedelta(days=7))
-        start_iso = (now - delta).isoformat()
-        end_iso = now.isoformat()
-        return tracking_store.get_stats_for_period(start_iso, end_iso)
+    # Import here to avoid circular imports
+    from routers.emails import (
+        _fetch_emails_from_graph,
+        _is_approval_email,
+        _build_time_filter,
+    )
+    from routers.auth import get_valid_access_token
 
-    return tracking_store.get_stats()
+    try:
+        access_token = await get_valid_access_token(session_id)
+        start_iso, end_iso = _build_time_filter(preset or "1w")
+        raw_emails = await _fetch_emails_from_graph(access_token, start_iso, end_iso)
+        approval_emails = [e for e in raw_emails if _is_approval_email(e)]
+
+        counts = {"pending": 0, "approved": 0, "rejected": 0, "needs_info": 0}
+        for email in approval_emails:
+            status = tracking_store.get_status(email["id"])  # returns "pending" if untracked
+            if status in counts:
+                counts[status] += 1
+
+        return {
+            "total_tracked": len(approval_emails),
+            **counts,
+        }
+
+    except Exception:
+        # Fallback to DB-only counts if Graph API fails (e.g., token expired)
+        if preset:
+            now = datetime.now(timezone.utc)
+            delta_map = {
+                "24h": timedelta(hours=24),
+                "2d": timedelta(days=2),
+                "1w": timedelta(weeks=1),
+                "1m": timedelta(days=30),
+            }
+            delta = delta_map.get(preset, timedelta(days=7))
+            start_iso = (now - delta).isoformat()
+            end_iso = now.isoformat()
+            return tracking_store.get_stats_for_period(start_iso, end_iso)
+        return tracking_store.get_stats()
 
 
 @router.get("/thread/{email_id}")

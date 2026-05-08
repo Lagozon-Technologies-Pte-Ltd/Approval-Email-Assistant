@@ -71,19 +71,19 @@
     </nav>
 
     <div class="sidebar-stats">
-      <div class="stat-card">
+      <div class="stat-card stat-card-active" id="statCardPending" onclick="App.setQueue('pending')" title="Show Pending queue">
         <div class="stat-val" id="statPending">—</div>
         <div class="stat-label">Pending</div>
       </div>
-      <div class="stat-card stat-approved">
+      <div class="stat-card stat-approved" id="statCardApproved" onclick="App.setQueue('approved')" title="Show Approved queue">
         <div class="stat-val" id="statApproved">—</div>
         <div class="stat-label">Approved</div>
       </div>
-      <div class="stat-card stat-rejected">
+      <div class="stat-card stat-rejected" id="statCardRejected" onclick="App.setQueue('rejected')" title="Show Rejected queue">
         <div class="stat-val" id="statRejected">—</div>
         <div class="stat-label">Rejected</div>
       </div>
-      <div class="stat-card stat-info">
+      <div class="stat-card stat-info" id="statCardNeedsInfo" onclick="App.setQueue('needs_info')" title="Show Needs Info queue">
         <div class="stat-val" id="statNeedsInfo">—</div>
         <div class="stat-label">Needs Info</div>
       </div>
@@ -150,8 +150,8 @@
         </div>
         <div id="emptyState" class="empty-state hidden">
           <div class="empty-icon">📭</div>
-          <h3>No approval emails found</h3>
-          <p>No pending approvals in the selected time range.</p>
+          <h3>No emails in this queue</h3>
+          <p id="emptyStateMsg">No pending approvals in the selected time range.</p>
         </div>
         <div id="emailGroups"></div>
       </div>

@@ -42,6 +42,7 @@ const ApiClient = {
     if (params.end_dt)          qs.set('end_dt', params.end_dt);
     if (params.duration_value)  qs.set('duration_value', params.duration_value);
     if (params.duration_unit)   qs.set('duration_unit', params.duration_unit);
+    if (params.queue)           qs.set('queue', params.queue);
     return this._request('GET', `/api/emails/approval?${qs}`);
   },
   getOtherEmails(params = {}) {
