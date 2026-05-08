@@ -87,9 +87,15 @@ const ApiClient = {
       received_at: meta.receivedAt || '',
     });
   },
-  getStats(preset = null) {
-    const qs = preset ? `?preset=${preset}` : '';
-    return this._request('GET', `/api/actions/stats${qs}`);
+  getStats(filter = {}) {
+    const qs = new URLSearchParams();
+    if (filter.preset)          qs.set('preset', filter.preset);
+    if (filter.start_dt)        qs.set('start_dt', filter.start_dt);
+    if (filter.end_dt)          qs.set('end_dt', filter.end_dt);
+    if (filter.duration_value)  qs.set('duration_value', filter.duration_value);
+    if (filter.duration_unit)   qs.set('duration_unit', filter.duration_unit);
+    const queryStr = qs.toString();
+    return this._request('GET', `/api/actions/stats${queryStr ? '?' + queryStr : ''}`);
   },
 
   // ── Thread Trail ──────────────────────────────────────────

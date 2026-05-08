@@ -257,12 +257,16 @@ async def perform_action(action_req: ActionRequest, request: Request):
 async def get_action_stats(
     request: Request,
     preset: Optional[str] = Query(None, description="24h, 2d, 1w, 1m"),
+    start_dt: Optional[str] = Query(None),
+    end_dt: Optional[str] = Query(None),
+    duration_value: Optional[int] = Query(None),
+    duration_unit: Optional[str] = Query(None, description="hours, days, weeks, months"),
 ):
     """
     Return accurate queue counts by fetching live approval emails from Graph API
     and resolving each one's status from the DB (defaulting to 'pending' for
-    untracked emails). This ensures the Pending count reflects reality, not just
-    emails that have been explicitly actioned.
+    untracked emails). Accepts the same time-filter params as the emails endpoint
+    so stats always match the currently visible email list.
     """
     session_id = request.cookies.get("session_id")
     if not session_id:
@@ -276,38 +280,50 @@ async def get_action_stats(
     )
     from routers.auth import get_valid_access_token
 
+    # If no filter param provided at all, default to "1w" so the
+    # dashboard shows meaningful counts on first load.
+    has_any_filter = any([preset, start_dt, end_dt, duration_value, duration_unit])
+    effective_preset = preset if has_any_filter else "1w"
+
     try:
         access_token = await get_valid_access_token(session_id)
-        start_iso, end_iso = _build_time_filter(preset=preset or "1w")
+        start_iso, end_iso = _build_time_filter(
+            preset=effective_preset,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            duration_value=duration_value,
+            duration_unit=duration_unit,
+        )
         raw_emails = await _fetch_emails_from_graph(access_token, start_iso, end_iso)
         approval_emails = [e for e in raw_emails if _is_approval_email(e)]
 
         counts = {"pending": 0, "approved": 0, "rejected": 0, "needs_info": 0}
         for email in approval_emails:
-            status = tracking_store.get_status(email["id"])  # returns "pending" if untracked
+            # get_status returns "pending" for any email not yet in the DB,
+            # so ALL live approval emails are counted correctly from the start.
+            status = tracking_store.get_status(email["id"])
             if status in counts:
                 counts[status] += 1
 
         return {
             "total_tracked": len(approval_emails),
+            "filter_range": {"start": start_iso, "end": end_iso},
             **counts,
         }
 
     except Exception:
         # Fallback to DB-only counts if Graph API fails (e.g., token expired)
-        if preset:
-            now = datetime.now(timezone.utc)
-            delta_map = {
-                "24h": timedelta(hours=24),
-                "2d": timedelta(days=2),
-                "1w": timedelta(weeks=1),
-                "1m": timedelta(days=30),
-            }
-            delta = delta_map.get(preset, timedelta(days=7))
-            start_iso = (now - delta).isoformat()
-            end_iso = now.isoformat()
+        try:
+            start_iso, end_iso = _build_time_filter(
+                preset=effective_preset,
+                start_dt=start_dt,
+                end_dt=end_dt,
+                duration_value=duration_value,
+                duration_unit=duration_unit,
+            )
             return tracking_store.get_stats_for_period(start_iso, end_iso)
-        return tracking_store.get_stats()
+        except Exception:
+            return tracking_store.get_stats()
 
 
 @router.get("/thread/{email_id}")

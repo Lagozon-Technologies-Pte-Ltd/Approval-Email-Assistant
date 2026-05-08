@@ -83,8 +83,7 @@ const App = (() => {
 
   async function loadStats() {
     try {
-      const preset = state.currentFilter.preset || null;
-      const stats = await ApiClient.getStats(preset);
+      const stats = await ApiClient.getStats(state.currentFilter);
       document.getElementById('statPending').textContent   = stats.pending   ?? '0';
       document.getElementById('statApproved').textContent  = stats.approved  ?? '0';
       document.getElementById('statRejected').textContent  = stats.rejected  ?? '0';
