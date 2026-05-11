@@ -276,12 +276,12 @@ async def get_action_stats(
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     # Import here to avoid circular imports
-    from routers.emails import (
+    from backend.routers.emails import (
         _fetch_emails_from_graph,
         _is_approval_email,
         _build_time_filter,
     )
-    from routers.auth import get_valid_access_token
+    from backend.routers.auth import get_valid_access_token
 
     # If no filter param provided at all, default to "24h" (matches default UI state)
     has_any_filter = any([preset, start_dt, end_dt, duration_value, duration_unit])
