@@ -109,7 +109,7 @@ const App = (() => {
     document.getElementById('sectionApproval').classList.toggle('hidden', section !== 'approval');
     document.getElementById('sectionOther').classList.toggle('hidden', section !== 'other');
     document.getElementById('filterBar').classList.toggle('hidden', section !== 'approval');
-    const queueLabels = { pending: 'Pending Approvals', approved: 'Approved', rejected: 'Rejected', needs_info: 'Responded ' };
+    const queueLabels = { pending: 'Pending Approvals', approved: 'Approved', rejected: 'Rejected', needs_info: 'Responded' };
     document.getElementById('pageTitle').textContent = section === 'approval'
       ? (queueLabels[state.currentQueue] || 'Approval Emails')
       : 'Other Emails';
@@ -251,7 +251,7 @@ const App = (() => {
 
     const total = (grouped.today?.length || 0) + (grouped.this_week?.length || 0) + (grouped.older?.length || 0);
     if (total === 0) {
-      const labels = { pending: 'pending approvals', approved: 'approved emails', rejected: 'rejected emails', needs_info: 'emails needing info' };
+      const labels = { pending: 'pending approvals', approved: 'approved emails', rejected: 'rejected emails', needs_info: 'responded emails' };
       const msgEl = document.getElementById('emptyStateMsg');
       if (msgEl) msgEl.textContent = `No ${labels[state.currentQueue] || 'emails'} in the selected time range.`;
       document.getElementById('emptyState').classList.remove('hidden');
@@ -313,7 +313,7 @@ const App = (() => {
       pending:       { label: 'pending',             cls: 'pending' },
       approved:      { label: 'approved',             cls: 'approved' },
       rejected:      { label: 'rejected',             cls: 'rejected' },
-      needs_info:    { label: 'needs info sent',       cls: 'needs_info' },
+      needs_info:    { label: 'Responded',       cls: 'needs_info' },
       waiting_reply: { label: 'waiting for reply',     cls: 'needs_info' },
       info_received: { label: 'info received — ready', cls: 'info-received' },
     };
@@ -394,8 +394,9 @@ const App = (() => {
           <div class="email-card-meta">
             <span class="email-date">${formatDate(email.receivedDateTime)}</span>
             <span class="priority-badge ${email.priority}">${priorityLabel(email.priority)}</span>
-            <span class="status-badge ${email.status}">${email.status}</span>
-            ${threadBadge}
+<span class="status-badge ${email.status}">
+  ${email.status === 'needs_info' ? 'RESPONDED' : email.status.toUpperCase()}
+</span>            ${threadBadge}
           </div>
         </div>
         <div class="email-subject">${escHtml(email.subject)}</div>
@@ -455,7 +456,7 @@ const App = (() => {
       pending:       { label: 'Pending decision',      cls: 'pending',       icon: '⏳' },
       approved:      { label: 'Approved',               cls: 'approved',      icon: '✅' },
       rejected:      { label: 'Rejected',               cls: 'rejected',      icon: '❌' },
-      needs_info:    { label: 'Needs info sent',        cls: 'needs_info',    icon: '💬' },
+      needs_info:    { label: 'Responded',        cls: 'needs_info',    icon: '💬' },
       waiting_reply: { label: 'Waiting for their reply', cls: 'needs_info',   icon: '⏳' },
       info_received: { label: 'Info received — ready to decide', cls: 'info-received', icon: '✅' },
     };
@@ -524,8 +525,10 @@ const App = (() => {
 
     const sb = document.getElementById('detailStatus');
     sb.className = `detail-status-badge ${email.status}`;
-    sb.textContent = email.status.charAt(0).toUpperCase() + email.status.slice(1);
-
+sb.textContent =
+  email.status === 'needs_info'
+    ? 'Responded'
+    : email.status.charAt(0).toUpperCase() + email.status.slice(1);
     document.getElementById('emailBodyFrame').textContent = email.bodyPreview || '';
 
     // Reset UI
@@ -849,8 +852,10 @@ const App = (() => {
       // Update status badge
       const sb = document.getElementById('detailStatus');
       sb.className = `detail-status-badge ${result.status}`;
-      sb.textContent = result.status.charAt(0).toUpperCase() + result.status.slice(1);
-
+sb.textContent =
+  result.status === 'needs_info'
+    ? 'Responded'
+    : result.status.charAt(0).toUpperCase() + result.status.slice(1);
       // Update in-memory list
       const idx = state.emails.findIndex(e => e.id === state.currentEmailId);
       if (idx !== -1) state.emails[idx].status = result.status;
@@ -880,7 +885,7 @@ const App = (() => {
     const activeCard = document.getElementById(map[queue]);
     if (activeCard) activeCard.classList.add('stat-card-active');
     // Update page title
-    const labels = { pending: 'Pending Approvals', approved: 'Approved', rejected: 'Rejected', needs_info: 'Needs Info' };
+    const labels = { pending: 'Pending Approvals', approved: 'Approved', rejected: 'Rejected', needs_info: 'Responded' };
     document.getElementById('pageTitle').textContent = labels[queue] || 'Approval Emails';
     loadApprovalEmails();
   }
