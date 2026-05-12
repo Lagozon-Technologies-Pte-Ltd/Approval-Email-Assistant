@@ -109,7 +109,7 @@ const App = (() => {
     document.getElementById('sectionApproval').classList.toggle('hidden', section !== 'approval');
     document.getElementById('sectionOther').classList.toggle('hidden', section !== 'other');
     document.getElementById('filterBar').classList.toggle('hidden', section !== 'approval');
-    const queueLabels = { pending: 'Pending Approvals', approved: 'Approved', rejected: 'Rejected', needs_info: 'Needs Info' };
+    const queueLabels = { pending: 'Pending Approvals', approved: 'Approved', rejected: 'Rejected', needs_info: 'Responded ' };
     document.getElementById('pageTitle').textContent = section === 'approval'
       ? (queueLabels[state.currentQueue] || 'Approval Emails')
       : 'Other Emails';
