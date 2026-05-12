@@ -13,7 +13,7 @@ from typing import Optional
 from datetime import datetime, timezone, timedelta
 
 from backend.config import settings
-from backend.routers.auth import get_valid_access_token
+from backend.routers.auth import get_valid_access_token, get_session_user_email
 from backend.services.tracking import tracking_store
 from backend.services.db import log_action, add_thread_entry, get_action_log
 
@@ -201,6 +201,7 @@ async def perform_action(action_req: ActionRequest, request: Request):
         raise HTTPException(status_code=400, detail="Invalid action")
 
     access_token = await get_valid_access_token(session_id)
+    user_id = get_session_user_email(session_id)
 
     # 1. AI-enhanced HTML reply
     enhanced_html = await _enhance_comment_with_openai(
@@ -213,12 +214,11 @@ async def perform_action(action_req: ActionRequest, request: Request):
     # 2. Send reply
     await _send_reply(access_token, action_req.email_id, enhanced_html)
 
-    # 3. Persist status — pass received_at so the DB knows WHEN the email
-    #    originally arrived (used by stats: pending counts by arrival time,
-    #    approved/rejected/needs_info count by when the decision was made).
+    # 3. Persist status scoped to this user
     new_status = STATUS_MAP[action_req.action]
     tracking_store.set_status(
         action_req.email_id, new_status,
+        user_id=user_id,
         conversation_id=action_req.conversation_id or None,
         received_at=action_req.received_at or None,
     )
@@ -281,7 +281,8 @@ async def get_action_stats(
         _is_approval_email,
         _build_time_filter,
     )
-    from backend.routers.auth import get_valid_access_token
+
+    user_id = get_session_user_email(session_id)
 
     # If no filter param provided at all, default to "24h" (matches default UI state)
     has_any_filter = any([preset, start_dt, end_dt, duration_value, duration_unit])
@@ -299,25 +300,17 @@ async def get_action_stats(
         raw_emails = await _fetch_emails_from_graph(access_token, start_iso, end_iso)
         approval_emails = [e for e in raw_emails if _is_approval_email(e)]
 
-        # Seed received_at for every email we see from Graph API so the DB
-        # can correctly count pending-by-arrival and actioned-by-decision-time.
-        # set_status with status="pending" will only INSERT if not already tracked
-        # (ON CONFLICT preserves existing status and never overwrites received_at once set).
         for email in approval_emails:
-            existing = tracking_store.get_status(email["id"])
+            existing = tracking_store.get_status(email["id"], user_id=user_id)
             if existing == "pending":
-                # Upsert with pending — this seeds received_at without overwriting
-                # any existing approved/rejected/needs_info status.
                 tracking_store.set_status(
                     email["id"],
                     "pending",
+                    user_id=user_id,
                     received_at=email.get("receivedDateTime"),
                 )
 
-        # Now query the DB with the correct dual logic:
-        #   pending   → received_at in range, still pending
-        #   approved/rejected/needs_info → updated_at (decision time) in range
-        stats = tracking_store.get_stats_for_period(start_iso, end_iso)
+        stats = tracking_store.get_stats_for_period(start_iso, end_iso, user_id=user_id)
 
         return {
             "total_tracked": stats["total_tracked"],
@@ -329,7 +322,6 @@ async def get_action_stats(
         }
 
     except Exception:
-        # Fallback to DB-only counts if Graph API fails (e.g., token expired)
         try:
             start_iso, end_iso = _build_time_filter(
                 preset=effective_preset,
@@ -338,9 +330,9 @@ async def get_action_stats(
                 duration_value=duration_value,
                 duration_unit=duration_unit,
             )
-            return tracking_store.get_stats_for_period(start_iso, end_iso)
+            return tracking_store.get_stats_for_period(start_iso, end_iso, user_id=user_id)
         except Exception:
-            return tracking_store.get_stats()
+            return tracking_store.get_stats(user_id=user_id)
 
 
 @router.get("/thread/{email_id}")

@@ -102,4 +102,9 @@ const ApiClient = {
   getEmailThread(emailId) {
     return this._request('GET', `/api/actions/thread/${emailId}`);
   },
+
+  // ── Conversation (clubbed thread) ─────────────────────────
+  getConversationEmails(conversationId) {
+    return this._request('GET', `/api/emails/conversation/${encodeURIComponent(conversationId)}`);
+  },
 };

@@ -28,11 +28,13 @@ def init_db():
         conn = _get_conn()
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS email_status (
-                email_id        TEXT PRIMARY KEY,
+                email_id        TEXT NOT NULL,
+                user_id         TEXT NOT NULL DEFAULT '',
                 status          TEXT NOT NULL DEFAULT 'pending',
                 updated_at      TEXT NOT NULL,
                 conversation_id TEXT,
-                received_at     TEXT
+                received_at     TEXT,
+                PRIMARY KEY (email_id, user_id)
             );
 
             CREATE TABLE IF NOT EXISTS action_log (
@@ -71,46 +73,52 @@ def init_db():
         except Exception:
             pass  # Column already exists — no-op
 
+        try:
+            conn.execute("ALTER TABLE email_status ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
+            conn.commit()
+        except Exception:
+            pass  # Column already exists — no-op
+
         conn.close()
 
 
 # ── Email Status ──────────────────────────────────────────────────────────────
 
-def get_status(email_id: str) -> str:
+def get_status(email_id: str, user_id: str = "") -> str:
     with _lock:
         conn = _get_conn()
         row = conn.execute(
-            "SELECT status FROM email_status WHERE email_id = ?", (email_id,)
+            "SELECT status FROM email_status WHERE email_id = ? AND user_id = ?",
+            (email_id, user_id.lower())
         ).fetchone()
         conn.close()
         return row["status"] if row else "pending"
 
 
-def set_status(email_id: str, status: str, conversation_id: str = None, received_at: str = None):
+def set_status(email_id: str, status: str, user_id: str = "", conversation_id: str = None, received_at: str = None):
     """
-    Persist the status for an email.
+    Persist the status for an email, scoped to a specific user.
+    - user_id:    the logged-in user's email — ensures counts are per-user.
     - received_at: the email's original arrival time (ISO string from Graph API).
-      Stored once and never overwritten, so we always know when the email came in.
-    - updated_at:  when this action was taken (now). Used for approved/rejected/
-      needs_info counts so they reflect WHEN the decision was made.
+    - updated_at:  when this action was taken (now).
     """
     now = datetime.now(timezone.utc).isoformat()
     with _lock:
         conn = _get_conn()
         conn.execute("""
-            INSERT INTO email_status (email_id, status, updated_at, conversation_id, received_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(email_id) DO UPDATE SET
+            INSERT INTO email_status (email_id, user_id, status, updated_at, conversation_id, received_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(email_id, user_id) DO UPDATE SET
                 status          = excluded.status,
                 updated_at      = excluded.updated_at,
                 conversation_id = COALESCE(excluded.conversation_id, conversation_id),
                 received_at     = COALESCE(email_status.received_at, excluded.received_at)
-        """, (email_id, status, now, conversation_id, received_at))
+        """, (email_id, user_id.lower(), status, now, conversation_id, received_at))
         conn.commit()
         conn.close()
 
 
-def get_stats_for_period(start_iso: Optional[str] = None, end_iso: Optional[str] = None) -> dict:
+def get_stats_for_period(start_iso: Optional[str] = None, end_iso: Optional[str] = None, user_id: str = "") -> dict:
     """
     Mixed-time stats — each status type uses the rule that makes sense for it:
 
@@ -127,25 +135,27 @@ def get_stats_for_period(start_iso: Optional[str] = None, end_iso: Optional[str]
         conn = _get_conn()
 
         # Pending: only within the selected time window (by arrival time)
+        uid = user_id.lower()
         if start_iso and end_iso:
             pending_row = conn.execute("""
                 SELECT COUNT(*) as cnt FROM email_status
-                WHERE status = 'pending'
+                WHERE status = 'pending' AND user_id = ?
                 AND received_at >= ? AND received_at <= ?
-            """, (start_iso, end_iso)).fetchone()
+            """, (uid, start_iso, end_iso)).fetchone()
             pending_count = pending_row["cnt"] if pending_row else 0
         else:
             pending_row = conn.execute(
-                "SELECT COUNT(*) as cnt FROM email_status WHERE status = 'pending'"
+                "SELECT COUNT(*) as cnt FROM email_status WHERE status = 'pending' AND user_id = ?",
+                (uid,)
             ).fetchone()
             pending_count = pending_row["cnt"] if pending_row else 0
 
         # Approved / Rejected / Needs Info: ALL TIME — no time filter
         actioned_rows = conn.execute("""
             SELECT status, COUNT(*) as cnt FROM email_status
-            WHERE status != 'pending'
+            WHERE status != 'pending' AND user_id = ?
             GROUP BY status
-        """).fetchall()
+        """, (uid,)).fetchall()
 
         conn.close()
 
@@ -165,17 +175,15 @@ def get_stats_for_period(start_iso: Optional[str] = None, end_iso: Optional[str]
 
 
 
-def get_all_actioned_email_ids(status: str) -> list:
+def get_all_actioned_email_ids(status: str, user_id: str = "") -> list:
     """
-    Return ALL email_ids that have ever been set to a given status,
-    along with their received_at. Used by the approved/rejected/needs_info
-    queues so they show every actioned email regardless of time range.
+    Return ALL email_ids that have ever been set to a given status for a specific user.
     """
     with _lock:
         conn = _get_conn()
         rows = conn.execute(
-            "SELECT email_id, received_at, updated_at FROM email_status WHERE status = ? ORDER BY updated_at DESC",
-            (status,)
+            "SELECT email_id, received_at, updated_at FROM email_status WHERE status = ? AND user_id = ? ORDER BY updated_at DESC",
+            (status, user_id.lower())
         ).fetchall()
         conn.close()
     return [dict(r) for r in rows]
@@ -269,3 +277,18 @@ def get_thread_by_conversation(conversation_id: str) -> list:
 
 # Initialise on import
 init_db()
+
+
+def get_emails_by_conversation(conversation_id: str) -> list:
+    """Return all email_status rows sharing the same conversation_id, ordered oldest first."""
+    with _lock:
+        conn = _get_conn()
+        rows = conn.execute(
+            """SELECT email_id, status, updated_at, received_at
+               FROM email_status
+               WHERE conversation_id = ?
+               ORDER BY COALESCE(received_at, updated_at) ASC""",
+            (conversation_id,)
+        ).fetchall()
+        conn.close()
+    return [dict(r) for r in rows]

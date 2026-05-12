@@ -9,9 +9,10 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from backend.config import settings
-from backend.routers.auth import get_valid_access_token
+from backend.routers.auth import get_valid_access_token, get_session_user_email
 from backend.services.priority import compute_priority
 from backend.services.tracking import tracking_store
+from backend.services.db import get_emails_by_conversation
 
 router = APIRouter()
 
@@ -200,10 +201,20 @@ async def _fetch_attachment_content(access_token: str, email_id: str, attachment
         return resp.content
 
 
-def _format_email(raw: dict, attachments: list = None) -> dict:
+def _format_email(raw: dict, attachments: list = None, user_id: str = "") -> dict:
     """Format raw Graph API email into our schema."""
-    status = tracking_store.get_status(raw["id"])
+    from backend.services.db import set_status as db_set_status
+    status = tracking_store.get_status(raw["id"], user_id)
     priority = compute_priority(raw, attachments or [])
+
+    # Register email in DB so conversation threading works even before any action is taken
+    db_set_status(
+        email_id=raw["id"],
+        status=status,
+        user_id=user_id,
+        conversation_id=raw.get("conversationId", ""),
+        received_at=raw.get("receivedDateTime", ""),
+    )
 
     return {
         "id": raw["id"],
@@ -221,6 +232,24 @@ def _format_email(raw: dict, attachments: list = None) -> dict:
         "status": status,
         "attachments": attachments or [],
     }
+
+
+def _enrich_with_thread_counts(emails: list) -> list:
+    """
+    For each email, count how many OTHER tracked emails share the same conversationId.
+    Adds a 'threadCount' field (1 = standalone, 2+ = has thread siblings).
+    """
+    from backend.services.db import get_emails_by_conversation
+    conv_cache: dict = {}
+    for email in emails:
+        conv_id = email.get("conversationId", "")
+        if not conv_id:
+            email["threadCount"] = 1
+            continue
+        if conv_id not in conv_cache:
+            conv_cache[conv_id] = len(get_emails_by_conversation(conv_id))
+        email["threadCount"] = max(conv_cache[conv_id], 1)
+    return emails
 
 
 async def _fetch_email_by_id(access_token: str, email_id: str) -> Optional[dict]:
@@ -273,12 +302,13 @@ async def get_approval_emails(
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     access_token = await get_valid_access_token(session_id)
+    user_id = get_session_user_email(session_id)
     VALID_QUEUES = {"pending", "approved", "rejected", "needs_info"}
 
     # ── Actioned queues (approved / rejected / needs_info) ────────────────────
     # Pull from DB (all-time), then hydrate from Graph API.
     if queue and queue in VALID_QUEUES and queue != "pending":
-        db_records = tracking_store.get_all_actioned_email_ids(queue)
+        db_records = tracking_store.get_all_actioned_email_ids(queue, user_id=user_id)
         result = []
         for record in db_records:
             raw = await _fetch_email_by_id(access_token, record["email_id"])
@@ -286,7 +316,7 @@ async def get_approval_emails(
                 attachments = []
                 if raw.get("hasAttachments"):
                     attachments = await _fetch_attachments_meta(access_token, raw["id"])
-                result.append(_format_email(raw, attachments))
+                result.append(_format_email(raw, attachments, user_id=user_id))
             else:
                 # Email may have been deleted/moved — build a minimal placeholder
                 # so it still appears in the list with correct status
@@ -325,6 +355,7 @@ async def get_approval_emails(
             else:
                 grouped["older"].append(e)
 
+        result = _enrich_with_thread_counts(result)
         return {
             "emails": result,
             "grouped": grouped,
@@ -342,7 +373,7 @@ async def get_approval_emails(
         attachments = []
         if email.get("hasAttachments"):
             attachments = await _fetch_attachments_meta(access_token, email["id"])
-        result.append(_format_email(email, attachments))
+        result.append(_format_email(email, attachments, user_id=user_id))
 
     # For pending queue filter out anything already actioned
     if queue == "pending":
@@ -367,6 +398,7 @@ async def get_approval_emails(
         else:
             grouped["older"].append(e)
 
+    result = _enrich_with_thread_counts(result)
     return {
         "emails": result,
         "grouped": grouped,
@@ -458,3 +490,69 @@ async def download_attachment(email_id: str, attachment_id: str, request: Reques
         media_type=content_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.get("/conversation/{conversation_id}")
+async def get_conversation_emails(conversation_id: str, request: Request):
+    """
+    Return all emails that share a conversation_id, enriched with live Graph data.
+    Used to render the clubbed thread view on the frontend.
+    """
+    session_id = request.cookies.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    access_token = await get_valid_access_token(session_id)
+
+    db_records = get_emails_by_conversation(conversation_id)
+
+    messages = []
+    for record in db_records:
+        raw = await _fetch_email_by_id(access_token, record["email_id"])
+        if raw:
+            attachments = []
+            if raw.get("hasAttachments"):
+                attachments = await _fetch_attachments_meta(access_token, raw["id"])
+            formatted = _format_email(raw, attachments)
+            formatted["db_status"]  = record["status"]
+            formatted["updated_at"] = record["updated_at"]
+            messages.append(formatted)
+        else:
+            # Email deleted/moved — use DB metadata as fallback
+            messages.append({
+                "id":                record["email_id"],
+                "subject":           "(Email no longer available)",
+                "sender":            "—",
+                "senderEmail":       "",
+                "receivedDateTime":  record.get("received_at") or record.get("updated_at") or "",
+                "bodyPreview":       "",
+                "body":              "",
+                "hasAttachments":    False,
+                "conversationId":    conversation_id,
+                "priority":          "low",
+                "status":            record["status"],
+                "db_status":         record["status"],
+                "updated_at":        record["updated_at"],
+                "attachments":       [],
+            })
+
+    # Determine overall thread state for the banner label
+    statuses = [m["status"] for m in messages]
+    if "approved" in statuses:
+        thread_state = "approved"
+    elif "rejected" in statuses:
+        thread_state = "rejected"
+    elif "needs_info" in statuses:
+        all_replied = any(m.get("sender") not in ("—", "") and not m.get("senderEmail", "").endswith(
+            request.cookies.get("session_id", "")  # rough check
+        ) for m in messages[1:])
+        thread_state = "waiting_reply" if not all_replied else "info_received"
+    else:
+        thread_state = "pending"
+
+    return {
+        "conversation_id": conversation_id,
+        "messages":        messages,
+        "thread_state":    thread_state,
+        "count":           len(messages),
+    }

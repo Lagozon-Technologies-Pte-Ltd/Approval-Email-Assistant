@@ -270,8 +270,103 @@ const App = (() => {
       header.className = 'group-header';
       header.textContent = group.label;
       container.appendChild(header);
-      group.items.forEach((email, i) => container.appendChild(createEmailCard(email, i)));
+
+      // Group emails by conversationId — multi-email threads render as clubbed cards
+      const convMap = new Map();
+      const convOrder = [];
+      group.items.forEach(email => {
+        const key = email.conversationId || email.id;
+        if (!convMap.has(key)) { convMap.set(key, []); convOrder.push(key); }
+        convMap.get(key).push(email);
+      });
+
+      convOrder.forEach((key, i) => {
+        const emails = convMap.get(key);
+        if (emails.length > 1) {
+          container.appendChild(createThreadGroupCard(emails, i));
+        } else {
+          container.appendChild(createEmailCard(emails[0], i));
+        }
+      });
     }
+  }
+
+  // ── Thread Group Card (clubbed) ────────────────────────────
+  function createThreadGroupCard(emails, idx) {
+    const wrap = document.createElement('div');
+    wrap.className = `thread-group-card priority-${emails[0].priority}`;
+    wrap.style.animationDelay = `${idx * 0.04}s`;
+    wrap.dataset.conversationId = emails[0].conversationId;
+
+    // Determine overall thread state label
+    const statuses = emails.map(e => e.status);
+    let threadState = 'pending';
+    if (statuses.includes('approved'))   threadState = 'approved';
+    else if (statuses.includes('rejected')) threadState = 'rejected';
+    else if (statuses.includes('needs_info')) {
+      // If last message is NOT from us → they replied back
+      const last = emails[emails.length - 1];
+      threadState = last.status === 'needs_info' ? 'waiting_reply' : 'info_received';
+    }
+
+    const stateConfig = {
+      pending:       { label: 'pending',             cls: 'pending' },
+      approved:      { label: 'approved',             cls: 'approved' },
+      rejected:      { label: 'rejected',             cls: 'rejected' },
+      needs_info:    { label: 'needs info sent',       cls: 'needs_info' },
+      waiting_reply: { label: 'waiting for reply',     cls: 'needs_info' },
+      info_received: { label: 'info received — ready', cls: 'info-received' },
+    };
+    const sc = stateConfig[threadState] || stateConfig.pending;
+
+    const rows = emails.map((email, i) => {
+      const isLast    = i === emails.length - 1;
+      const initial   = (email.sender || '?')[0].toUpperCase();
+      const isOurs    = email.status === 'needs_info' && i > 0;
+      const avatarCls = isOurs ? 'thread-group-avatar ours' : 'thread-group-avatar';
+      const roleLabel = i === 0 ? 'original request'
+                      : isOurs  ? 'you requested info'
+                      : 'they replied';
+
+      return `
+        <div class="thread-group-row ${isLast ? 'last' : ''}" data-email-id="${escHtml(email.id)}">
+          <div class="thread-group-connector">
+            <div class="${avatarCls}">${initial}</div>
+            ${!isLast ? '<div class="thread-group-line"></div>' : ''}
+          </div>
+          <div class="thread-group-body">
+            <div class="thread-group-top">
+              <span class="thread-group-sender">${escHtml(email.sender)}</span>
+              <div class="thread-group-meta">
+                <span class="thread-group-date">${formatDate(email.receivedDateTime)}</span>
+                <span class="thread-role-pill">${roleLabel}</span>
+              </div>
+            </div>
+            <div class="thread-group-subject">${escHtml(email.subject)}</div>
+            <div class="thread-group-preview">${escHtml(email.bodyPreview)}</div>
+          </div>
+        </div>`;
+    }).join('');
+
+    wrap.innerHTML = `
+      <div class="thread-group-label-bar">
+        <span class="thread-group-count-icon">🔗</span>
+        <span class="thread-group-count">${emails.length} messages · linked thread</span>
+        <span class="priority-badge ${emails[0].priority}">${priorityLabel(emails[0].priority)}</span>
+      </div>
+      <div class="thread-group-rows">${rows}</div>
+      <div class="thread-group-footer thread-state-${sc.cls}">
+        <span class="thread-state-dot"></span>
+        <span>${sc.label}</span>
+        <span class="thread-group-open-hint">click any message to open →</span>
+      </div>`;
+
+    // Clicking any row opens that specific email
+    wrap.querySelectorAll('.thread-group-row').forEach((row, i) => {
+      row.onclick = (e) => { e.stopPropagation(); openEmailDetail(emails[i]); };
+    });
+
+    return wrap;
   }
 
   function createEmailCard(email, idx) {
@@ -286,6 +381,11 @@ const App = (() => {
       ? email.attachments.map(a => `<span class="att-chip">📎 ${escHtml(a.name)}</span>`).join('')
       : email.hasAttachments ? '<span class="att-chip">📎 Attachment</span>' : '';
 
+    // Show thread badge if this email has siblings tracked in DB
+    const threadBadge = (email.threadCount > 1)
+      ? `<span class="thread-badge">🔗 ${email.threadCount} in thread</span>`
+      : '';
+
     card.innerHTML = `
       <div class="email-avatar">${initial}</div>
       <div class="email-card-body">
@@ -295,6 +395,7 @@ const App = (() => {
             <span class="email-date">${formatDate(email.receivedDateTime)}</span>
             <span class="priority-badge ${email.priority}">${priorityLabel(email.priority)}</span>
             <span class="status-badge ${email.status}">${email.status}</span>
+            ${threadBadge}
           </div>
         </div>
         <div class="email-subject">${escHtml(email.subject)}</div>
@@ -323,7 +424,93 @@ const App = (() => {
       renderAttachments(detail.attachments || []);
     } catch {}
 
+    // Load conversation siblings inline if this email has a thread
+    if (emailSummary.conversationId) {
+      loadConversationPanel(emailSummary.conversationId, emailSummary.id);
+    }
+
     loadAiSummary();
+  }
+
+  async function loadConversationPanel(conversationId, currentEmailId) {
+    const panel = document.getElementById('conversationPanel');
+    if (!panel) return;
+    panel.classList.remove('hidden');
+    panel.innerHTML = '<div class="thread-loading"><span class="spinner-inline"></span> Loading conversation…</div>';
+
+    try {
+      const data = await ApiClient.getConversationEmails(conversationId);
+      if (!data.messages || data.messages.length <= 1) {
+        panel.classList.add('hidden');
+        return;
+      }
+      renderConversationPanel(data, currentEmailId, panel);
+    } catch {
+      panel.classList.add('hidden');
+    }
+  }
+
+  function renderConversationPanel(data, currentEmailId, panel) {
+    const stateConfig = {
+      pending:       { label: 'Pending decision',      cls: 'pending',       icon: '⏳' },
+      approved:      { label: 'Approved',               cls: 'approved',      icon: '✅' },
+      rejected:      { label: 'Rejected',               cls: 'rejected',      icon: '❌' },
+      needs_info:    { label: 'Needs info sent',        cls: 'needs_info',    icon: '💬' },
+      waiting_reply: { label: 'Waiting for their reply', cls: 'needs_info',   icon: '⏳' },
+      info_received: { label: 'Info received — ready to decide', cls: 'info-received', icon: '✅' },
+    };
+    const sc = stateConfig[data.thread_state] || stateConfig.pending;
+
+    const msgs = data.messages.map((msg, i) => {
+      const isCurrent = msg.id === currentEmailId;
+      const isFirst   = i === 0;
+      const isOurs    = msg.status === 'needs_info' && !isFirst;
+      const initial   = (msg.sender || '?')[0].toUpperCase();
+      const roleLabel = isFirst  ? 'Original request'
+                      : isOurs   ? 'You — requested more info'
+                      : 'They replied';
+      const roleClass = isFirst  ? 'conv-role-original'
+                      : isOurs   ? 'conv-role-ours'
+                      : 'conv-role-reply';
+
+      return `
+        <div class="conv-message ${isCurrent ? 'conv-message-current' : ''} ${isOurs ? 'conv-message-ours' : ''}">
+          <div class="conv-connector">
+            <div class="conv-avatar ${isOurs ? 'ours' : ''}">${initial}</div>
+            ${i < data.messages.length - 1 ? '<div class="conv-line"></div>' : ''}
+          </div>
+          <div class="conv-body" onclick="App.openEmailDetailById('${escHtml(msg.id)}')">
+            <div class="conv-top">
+              <span class="conv-sender">${escHtml(msg.sender)}</span>
+              <div class="conv-meta">
+                <span class="conv-date">${formatDate(msg.receivedDateTime)}</span>
+                <span class="conv-role-pill ${roleClass}">${roleLabel}</span>
+                ${isCurrent ? '<span class="conv-current-pill">viewing now</span>' : ''}
+              </div>
+            </div>
+            <div class="conv-subject">${escHtml(msg.subject)}</div>
+            <div class="conv-preview">${escHtml(msg.bodyPreview)}</div>
+          </div>
+        </div>`;
+    }).join('');
+
+    panel.innerHTML = `
+      <div class="conv-panel-header">
+        <span class="conv-panel-title">🔗 Conversation thread · ${data.count} messages</span>
+        <span class="conv-state-badge conv-state-${sc.cls}">${sc.icon} ${sc.label}</span>
+      </div>
+      <div class="conv-messages">${msgs}</div>
+    `;
+  }
+
+  async function openEmailDetailById(emailId) {
+    const email = state.emails.find(e => e.id === emailId);
+    if (email) { openEmailDetail(email); return; }
+    // Fallback: fetch minimal info and open
+    try {
+      const detail = await ApiClient.getEmailDetail(emailId);
+      openEmailDetail({ id: emailId, ...detail });
+    } catch {}
   }
 
   function populateDetailPanel(email) {
@@ -610,6 +797,8 @@ const App = (() => {
     state.currentEmailId = null;
     state.currentEmail   = null;
     state.threadVisible  = false;
+    const cp = document.getElementById('conversationPanel');
+    if (cp) { cp.innerHTML = ''; cp.classList.add('hidden'); }
   }
 
   // ── Actions ───────────────────────────────────────────────
@@ -777,7 +966,7 @@ const App = (() => {
   return {
     login, logout, showSection,
     setPreset, toggleCustomRange, applyCustomRange, applyDuration,
-    openEmailDetail, closeDetail,
+    openEmailDetail, openEmailDetailById, closeDetail,
     performAction, regenerateSummary, refresh,
     summarizeAttachment, toggleThread,
     setQueue,

@@ -95,6 +95,14 @@ async def get_valid_access_token(session_id: str) -> str:
     return data["access_token"]
 
 
+def get_session_user_email(session_id: str) -> str:
+    """Return the logged-in user's email for the given session. Empty string if unknown."""
+    data = _token_store.get(session_id)
+    if not data:
+        return ""
+    return data.get("user_email", "").lower()
+
+
 @router.get("/login")
 async def login(response: Response):
     """Initiate Microsoft OAuth flow."""
@@ -120,15 +128,21 @@ async def callback(request: Request, code: str = None, state: str = None, error:
 
     tokens = await _exchange_code_for_tokens(code)
     session_id = secrets.token_urlsafe(32)
-    store_token(session_id, tokens)
 
-    # Fetch user profile
+    # Fetch user profile and store email alongside tokens
     async with httpx.AsyncClient() as client:
         resp = await client.get(
             f"{settings.GRAPH_API_BASE}/me",
             headers={"Authorization": f"Bearer {tokens['access_token']}"},
         )
         user_info = resp.json() if resp.status_code == 200 else {}
+
+    tokens["user_email"] = (
+        user_info.get("mail")
+        or user_info.get("userPrincipalName")
+        or ""
+    ).lower()
+    store_token(session_id, tokens)
 
     redirect = RedirectResponse(url="/?authenticated=true")
     redirect.set_cookie(
